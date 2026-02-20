@@ -43,7 +43,7 @@ Total: N6300
 7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
 
 const model = genAI.getGenerativeModel({ 
-    model: "gemini-1.5-flash",
+    model: "gemin-2.0-flash",
     systemInstruction: systemInstruction 
 });
 
