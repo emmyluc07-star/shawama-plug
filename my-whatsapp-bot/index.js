@@ -40,10 +40,12 @@ Address: FUTA South Gate hostel
 Order: 1x Jumbo Beef, 1x Extra Cheese
 Total: N6300
 
-7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
+7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]. Reply with your receipt, and our team will dispatch your meal immediately!"
+8. NEVER confirm payments. After giving the OPAY details, you must say: "A human manager is now taking over this chat. Please upload your receipt screenshot here, and they will confirm your pickup/delivery time!" If the customer says "Sent" or talks to you after this, only reply: "Please wait for our human manager to verify your payment."
+9. FORMATTING (CRITICAL): You must make your messages easy to read on WhatsApp. Never send long walls of text. You MUST use double line breaks (press enter twice) between different thoughts and paragraphs. Use bullet points for lists. Always use *asterisks* to bold food names and prices.`;
 
 const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
+    model: "gemini-2.5-flash-lite",
     systemInstruction: systemInstruction 
 });
 
@@ -85,6 +87,7 @@ app.post('/webhook', async (req, res) => {
         const value = changes?.value;
         const message = value?.messages?.[0];
 
+        // --- BLOCK 1: HANDLE TEXT MESSAGES & KITCHEN TICKETS ---
         if (message?.type === 'text') {
             const customerPhone = message.from;
             const customerText = message.text.body;
@@ -93,7 +96,7 @@ app.post('/webhook', async (req, res) => {
             const aiReply = await askGemini(customerPhone, customerText);
 
             try {
-                // 1. Reply to Customer
+                // Reply to Customer
                 await axios({
                     method: 'POST',
                     url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -108,7 +111,7 @@ app.post('/webhook', async (req, res) => {
                     },
                 });
 
-                // 2. CEO KITCHEN TICKET ROUTER
+                // CEO KITCHEN TICKET ROUTER
                 if (aiReply.includes('[NEW_ORDER]')) {
                     await axios({
                         method: 'POST',
@@ -124,9 +127,65 @@ app.post('/webhook', async (req, res) => {
                         },
                     });
                 }
+            } catch (error) {
+                console.error("Failed to send text message.");
+            }
+
+        // --- BLOCK 2: HANDLE RECEIPT SCREENSHOTS ---
+        } else if (message?.type === 'image') {
+            const customerPhone = message.from;
+            const mediaId = message.image.id;
+            const phoneId = value.metadata.phone_number_id;
+
+            try {
+                // 1. Tell the customer to wait
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: customerPhone,
+                        text: { body: "Receipt received! 🧾 Our human manager is verifying it now. You will get a confirmation shortly." },
+                    },
+                });
+
+                // 2. Forward the exact image to the CEO
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: '2347087505608', 
+                        type: 'image',
+                        image: { id: mediaId },
+                    },
+                });
+
+                // 3. Send the CEO the Customer's number to tap and reply
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: '2347087505608', 
+                        text: { body: `🚨 RECEIPT ALERT 🚨\nFrom Customer: +${customerPhone}\n\nTo approve this order, tap their number above to message them directly from your personal WhatsApp!` },
+                    },
+                });
 
             } catch (error) {
-                console.error("Failed to send message.");
+                console.error("Failed to forward image.");
             }
         }
         res.sendStatus(200);
@@ -139,4 +198,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Bot server is running on port ${PORT}`);
 });
-                    
