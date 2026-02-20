@@ -100,7 +100,7 @@ const orderCodes = new Map();
 // Add as many numbers as you want here, separated by commas!
 const ADMIN_NUMBERS = [
     '2347087505608', // You
-    '2347025812501', // Example: CEO
+    //'2347025812501', // Example: CEO
     // '2348098765432'  // Example: Kitchen Manager
 ];
 
@@ -124,7 +124,7 @@ function isShopOpen() {
 
     // Shop opens at 16:00 (4 PM) and closes at 21:00 (9 PM)
     const openingHour = 16;
-    const closingHour = 21;
+    const closingHour = 24;
 
     return currentHour >= openingHour && currentHour < closingHour;
 }
