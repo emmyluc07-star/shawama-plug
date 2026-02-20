@@ -43,7 +43,7 @@ Total: N6300
 7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
 
 const model = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
+    model: "gemini-1.5-flash",
     systemInstruction: systemInstruction 
 });
 
@@ -59,7 +59,7 @@ async function askGemini(customerPhone, userQuestion) {
         const result = await chat.sendMessage(userQuestion);
         return result.response.text();
     } catch (error) {
-        console.error("Gemini Error:", error);
+        console.error("🚨 GEMINI CRASH REASON:", error.message);
         return "Sorry, our system is down. Please 🤙 call or message 08133728255.  OR try resending you last message in the next 1 minute";
     }
 }
@@ -104,7 +104,7 @@ app.post('/webhook', async (req, res) => {
                     data: {
                         messaging_product: 'whatsapp',
                         to: customerPhone,
-                        text: { body: aiReply },
+                        text: { body: aiReply.replace('[NEW_ORDER]', '').trim() },
                     },
                 });
 
@@ -119,7 +119,7 @@ app.post('/webhook', async (req, res) => {
                         },
                         data: {
                             messaging_product: 'whatsapp',
-                            to: '2347087505608', // <--- PUT YOUR NUMBER OR CEO NUMBER HERE
+                            to: '2347087505608', 
                             text: { body: `🚨 KITCHEN ALERT 🚨\nFrom Customer: +${customerPhone}\n\n${aiReply}` },
                         },
                     });
@@ -139,3 +139,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Bot server is running on port ${PORT}`);
 });
+                    
