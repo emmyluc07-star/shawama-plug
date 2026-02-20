@@ -8,13 +8,8 @@ app.use(express.json());
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// The Conversational Shawarma Plug AI
-async function askGemini(userQuestion) {
-    try {
-        const model = genAI.getGenerativeModel({ 
-            model: "gemini-2.5-flash",
-            systemInstruction: `You are the friendly, conversational customer service assistant for Shawarma Plug. 
-Your job is to take orders, calculate prices, and handle customer interactions with empathy and warmth.
+const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
+Your job is to take orders, calculate prices, and finalize details.
 
 Here is our menu:
 **SHAWARMA**
@@ -30,14 +25,38 @@ Here is our menu:
 **EXTRAS**
 * Cheese: N1500 | Beef: N700 | Cream: N600 | Sausage: N350
 
-Rules:
-1. Be warm and polite. 
+CRITICAL RULES:
+1. Be warm and conversational. Remember what the customer just said.
 2. ALWAYS confirm Beef or Chicken.
-3. Gently upsell extras (Cheese, Sausage).
-4. Calculate total price clearly and ask pickup/delivery.
-5. IF COMPLAINING OR ASKING FOR HUMAN: Apologize sincerely, say "I am flagging this for a human manager right now, they will step in shortly," and offer the number 08133728255. Do not argue.` 
-        });
-        const result = await model.generateContent(userQuestion);
+3. Once they choose their food, ask: "Will this be for Pickup or Delivery?"
+4. IF PICKUP: Ask for the name for the order.
+5. IF DELIVERY: You MUST ask for their exact delivery address and an active phone number for the rider.
+6. **THE KITCHEN TICKET (CRITICAL):** Once you have the final food items, the total price, AND their delivery address (or pickup name), you MUST output a summary for the kitchen. Start the summary with the exact word [NEW_ORDER]. 
+Example:
+[NEW_ORDER]
+Name: John
+Type: Delivery
+Address: FUTA South Gate hostel
+Order: 1x Jumbo Beef, 1x Extra Cheese
+Total: N6300
+
+7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [INSERT BANK DETAILS HERE]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
+
+const model = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash",
+    systemInstruction: systemInstruction 
+});
+
+const activeConversations = new Map();
+
+async function askGemini(customerPhone, userQuestion) {
+    try {
+        let chat = activeConversations.get(customerPhone);
+        if (!chat) {
+            chat = model.startChat({ history: [] });
+            activeConversations.set(customerPhone, chat);
+        }
+        const result = await chat.sendMessage(userQuestion);
         return result.response.text();
     } catch (error) {
         console.error("Gemini Error:", error);
@@ -71,10 +90,10 @@ app.post('/webhook', async (req, res) => {
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id;
 
-            const aiReply = await askGemini(customerText);
+            const aiReply = await askGemini(customerPhone, customerText);
 
             try {
-                // 1. Send reply to the customer
+                // 1. Reply to Customer
                 await axios({
                     method: 'POST',
                     url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -89,20 +108,22 @@ app.post('/webhook', async (req, res) => {
                     },
                 });
 
-                // 2. Send silent notification to YOUR phone (Replace with your Redmi number)
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: '07087505603', // <--- PUT YOUR NUMBER HERE!
-                        text: { body: `🤖 BOT LOG: Handled a message from ${customerPhone}.` },
-                    },
-                });
+                // 2. CEO KITCHEN TICKET ROUTER
+                if (aiReply.includes('[NEW_ORDER]')) {
+                    await axios({
+                        method: 'POST',
+                        url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                        headers: {
+                            Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                            'Content-Type': 'application/json',
+                        },
+                        data: {
+                            messaging_product: 'whatsapp',
+                            to: '234YOUR_CEO_NUMBER_HERE', // <--- PUT YOUR NUMBER OR CEO NUMBER HERE
+                            text: { body: `🚨 KITCHEN ALERT 🚨\nFrom Customer: +${customerPhone}\n\n${aiReply}` },
+                        },
+                    });
+                }
 
             } catch (error) {
                 console.error("Failed to send message.");
@@ -114,7 +135,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`Bot server is running on port ${PORT}`);
 });
