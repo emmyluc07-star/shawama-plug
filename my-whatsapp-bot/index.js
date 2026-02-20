@@ -193,4 +193,32 @@ app.post('/webhook', async (req, res) => {
                     },
                 });
 
-                // 3. Send the CEO the Customer
+                // 3. Send the CEO the Customer's number to tap and reply
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: '2347087505608', 
+                        text: { body: `🚨 RECEIPT ALERT 🚨\nFrom Customer: +${customerPhone}\n\nTo approve this order, tap their number above to message them directly from your personal WhatsApp!` },
+                    },
+                });
+
+            } catch (error) {
+                console.error("Failed to forward image.");
+            }
+        }
+        res.sendStatus(200);
+    } else {
+        res.sendStatus(404);
+    }
+});
+
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+    console.log(`Bot server is running on port ${PORT}`);
+});
