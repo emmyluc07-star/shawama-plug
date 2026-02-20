@@ -40,7 +40,7 @@ Address: FUTA South Gate hostel
 Order: 1x Jumbo Beef, 1x Extra Cheese
 Total: N6300
 
-7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [INSERT BANK DETAILS HERE]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
+7. After the [NEW_ORDER] summary, tell the customer: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]. Reply with your receipt, and our team will dispatch your meal immediately!"`;
 
 const model = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash",
@@ -119,7 +119,7 @@ app.post('/webhook', async (req, res) => {
                         },
                         data: {
                             messaging_product: 'whatsapp',
-                            to: '234YOUR_CEO_NUMBER_HERE', // <--- PUT YOUR NUMBER OR CEO NUMBER HERE
+                            to: '2347087505608', // <--- PUT YOUR NUMBER OR CEO NUMBER HERE
                             text: { body: `🚨 KITCHEN ALERT 🚨\nFrom Customer: +${customerPhone}\n\n${aiReply}` },
                         },
                     });
