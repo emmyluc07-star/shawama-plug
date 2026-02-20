@@ -115,17 +115,23 @@ function getOrderCode(customerPhone) {
     return orderCodes.get(customerPhone);
 }
 
+// --- ADMIN GOD MODE STATE ---
+let manualShopState = 'auto'; // Can be 'auto', 'open', or 'closed'
+let pauseMessage = ""; // <-- NEW: Holds our temporary excuse
 // --- THE DIGITAL BOUNCER (WORKING HOURS) ---
-// It must live OUTSIDE of askGemini so the webhook can see it!
 function isShopOpen() {
-    // Get current time in Nigerian Time (WAT / UTC+1)
+    // 1. Check for Admin God Mode Overrides first!
+    if (manualShopState === 'open') return true;
+    if (manualShopState === 'closed') return false;
+
+    // 2. If it is on 'auto', read the Nigerian Clock
     const now = new Date();
     const nigeriaTime = new Date(now.toLocaleString("en-US", { timeZone: "Africa/Lagos" }));
     const currentHour = nigeriaTime.getHours();
 
     // Shop opens at 16:00 (4 PM) and closes at 21:00 (9 PM)
     const openingHour = 16;
-    const closingHour = 24;
+    const closingHour = 21;
 
     return currentHour >= openingHour && currentHour < closingHour;
 }
@@ -182,14 +188,35 @@ app.post('/webhook', async (req, res) => {
         const value = changes?.value;
         const message = value?.messages?.[0];
 
-        // --- BLOCK 1: HANDLE TEXT MESSAGES & KITCHEN TICKETS ---
+       // --- BLOCK 1: HANDLE TEXT MESSAGES & KITCHEN TICKETS ---
         if (message?.type === 'text') {
             const customerPhone = message.from;
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
 
-            // Check if the shop is closed before waking up the AI
-            if (!isShopOpen()) {
+            // --- BLOCK 0: ADMIN GOD MODE INTERCEPTOR ---
+            if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
+                const command = customerText.toLowerCase().trim();
+                let adminReply = "";
+
+                if (command === '/close') {
+                    manualShopState = 'closed';
+                    adminReply = "🛑 GOD MODE: Shop is now manually CLOSED. The bot will send the standard night message.";
+                } else if (command === '/open') {
+                    manualShopState = 'open';
+                    adminReply = "✅ GOD MODE: Shop is now manually OPEN. The bot is taking orders again!";
+                } else if (command === '/auto') {
+                    manualShopState = 'auto';
+                    adminReply = "⏱️ GOD MODE: Shop is back on AUTO mode. It will follow the standard schedule.";
+                } else if (command === '/pause') {
+                    manualShopState = 'closed'; // Lock the door
+                    pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
+                    adminReply = "⏸️ GOD MODE: Shop is PAUSED. Customers will be told we are running late!";
+                } else {
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, or /auto.";
+                }
+
+                // Send confirmation back to the Admin
                 await axios({
                     method: 'POST',
                     url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -200,11 +227,41 @@ app.post('/webhook', async (req, res) => {
                     data: {
                         messaging_product: 'whatsapp',
                         to: customerPhone,
-                        text: { body: "We are currently closed for the night! 🌙\n\nOur kitchen opens at 4:00 PM tomorrow and the Shop opens at 6:00 PM tomorrow. Drop your order then and we'll get it right to you!" },
+                        text: { body: adminReply },
+                    },
+                });
+                return res.sendStatus(200); 
+            }
+            // --- NORMAL CUSTOMER FLOW ---
+            // Check if the shop is closed before waking up the AI
+            if (!isShopOpen()) {
+                
+                // Decide which excuse to give the customer
+                let excuseToGive = "We are currently closed for the night! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow. Drop your order then and we'll get it right to you!";
+                
+                // If the admin used /pause, use the pause message instead!
+                if (pauseMessage !== "") {
+                    excuseToGive = pauseMessage;
+                }
+
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: customerPhone,
+                        text: { body: excuseToGive },
                     },
                 });
                 return res.sendStatus(200); // Stop the code here!
             }
+            
+            // If they made it past the bouncer, clear the pause message and talk to Gemini
+            pauseMessage = "";
             
             // If shop is open, continue to Gemini...
             const aiReply = await askGemini(customerPhone, customerText);
