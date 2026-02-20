@@ -60,7 +60,7 @@ async function askGemini(customerPhone, userQuestion) {
         return result.response.text();
     } catch (error) {
         console.error("Gemini Error:", error);
-        return "Sorry, our system is down. Please call 08133728255.";
+        return "Sorry, our system is down. Please 🤙 call or message 08133728255.  OR try resending you last message in the next 1 minute";
     }
 }
 
