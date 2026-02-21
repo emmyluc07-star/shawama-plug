@@ -110,9 +110,11 @@ STEP 8: THE REBOOT APOLOGY (SERVER AMNESIA)
 * Say: "I am so sorry! My system had a quick network refresh and I lost my memory of your cart. 🥺 Could you please tell me your order one more time so I can rush it to the kitchen?"
   
 FORMATTING (CRITICAL):
-* Never send long walls of text. Use double line breaks between paragraphs. Use bullet points for lists. Use *asterisks* to bold food names(e.g shawarma) and prices.
-* Try not to write long texts, try to keep them short as you can. And you can replace the texts with a list type of what ever you are trying to tell the customer.`;
-
+* STRICT RULE: DO NOT use asterisks (*) or markdown anywhere in your response. 
+* Keep formatting completely clean and plain for WhatsApp.
+* Use ALL CAPS for emphasis if needed, rather than bolding.
+* Never send long walls of text. Use double line breaks between paragraphs. Use dashes (-) for bullet points.
+* Try not to write long texts, keep them as short as you can. Replace long paragraphs with clean, dashed lists whenever you are explaining things to a customer.`;
 // --- DUAL AI MODELS (PRIMARY & FALLBACK) ---
 const primaryModel = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash-lite",
@@ -167,27 +169,56 @@ function isShopOpen() {
 
     return currentHour >= openingHour && currentHour < closingHour;
 }
+// --- HELPER: TIME DELAY ---
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function askGemini(customerPhone, userQuestion) {
+// --- THE PATIENT BOT (AUTO-RETRY & STICKY FALLBACK) ---
+async function askGemini(customerPhone, userQuestion, retries = 2) {
+    let chat = activeConversations.get(customerPhone);
+
+    // 1. If no chat exists, start a fresh one on the Primary model
+    if (!chat) {
+        chat = primaryModel.startChat({ history: [] });
+        chat.activeModel = 'primary'; 
+        activeConversations.set(customerPhone, chat);
+    }
+
     try {
-        let chat = activeConversations.get(customerPhone);
-        if (!chat) {
-            chat = primaryModel.startChat({ history: [] });
-            activeConversations.set(customerPhone, chat);
-        }
+        // 2. Try to send the message
         const result = await chat.sendMessage(userQuestion);
         return result.response.text();
 
-    } catch (primaryError) {
-        console.warn("⚠️ Primary AI failed. Rerouting to Fallback AI...", primaryError.message);
-        try {
-            let chat = fallbackModel.startChat({ history: [] });
-            activeConversations.set(customerPhone, chat); 
-            const result = await chat.sendMessage(userQuestion);
-            return result.response.text();
-        } catch (fallbackError) {
-            console.error("🚨 TOTAL AI CRASH:", fallbackError.message);
-            return "Sorry, our automated system is currently experiencing heavy traffic. Please 🤙 call or message 08133728255, and a manager will take your order immediately!";
+    } catch (error) {
+        console.warn(`⚠️ ${chat.activeModel.toUpperCase()} AI failed. Error:`, error.message);
+
+        // 3. THE PATIENT BOT: If we hit a limit, wait 3 seconds and try again!
+        if (retries > 0) {
+            console.log(`⏳ Rate limit hit! Waiting 3 seconds... (${retries} retries left)`);
+            await delay(3000); // Pauses the code for 3 seconds
+            return await askGemini(customerPhone, userQuestion, retries - 1); // Try again
+        }
+
+        // 4. If retries are completely exhausted, switch to fallback
+        if (chat.activeModel === 'primary') {
+            console.log("🔄 Retries failed. Rerouting user to Fallback AI and transferring memory...");
+            
+            let oldHistory = [];
+            try { oldHistory = await chat.getHistory(); } catch (e) {}
+
+            chat = fallbackModel.startChat({ history: oldHistory });
+            chat.activeModel = 'fallback'; 
+            activeConversations.set(customerPhone, chat);
+
+            try {
+                const result = await chat.sendMessage(userQuestion);
+                return result.response.text();
+            } catch (fallbackError) {
+                console.error("🚨 FALLBACK AI INSTANT CRASH:", fallbackError.message);
+                return "Sorry, our system is experiencing heavy traffic! Please 🤙 call or message 08133728255 to place your order.";
+            }
+        } else {
+            console.error("🚨 TOTAL AI CRASH: Both models failed.");
+            return "Sorry, our system is experiencing heavy traffic! Please 🤙 call or message 08133728255 to place your order.";
         }
     }
 }
