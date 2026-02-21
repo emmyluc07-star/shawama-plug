@@ -186,6 +186,9 @@ function getPhoneByOrderCode(searchCode) {
 
 let manualShopState = 'auto'; 
 let pauseMessage = ""; 
+// --- INVENTORY STATE ---
+let isBeefAvailable = true;
+let isChickenAvailable = true;
 
 function isShopOpen() {
     if (manualShopState === 'open') return true;
@@ -212,8 +215,17 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
         activeConversations.set(customerPhone, chat);
     }
 
+    // --- SECRET INVENTORY INJECTION ---
+    let inventoryAlert = "";
+    if (!isBeefAvailable && isChickenAvailable) inventoryAlert = "[SYSTEM NOTE: We are completely OUT OF BEEF. Only Chicken is available. Apologize and offer Chicken if they ask for Beef.]\n\n";
+    if (isChickenAvailable === false && isBeefAvailable) inventoryAlert = "[SYSTEM NOTE: We are completely OUT OF CHICKEN. Only Beef is available. Apologize and offer Beef if they ask for Chicken.]\n\n";
+    if (!isBeefAvailable && !isChickenAvailable) inventoryAlert = "[SYSTEM NOTE: We are OUT OF BOTH Beef and Chicken. Tell the customer we are currently sold out of main proteins.]\n\n";
+    
+    // Combine the secret alert with what the customer actually typed
+    let finalPrompt = inventoryAlert ? inventoryAlert + "Customer says: " + userQuestion : userQuestion;
+
     try {
-        const result = await chat.sendMessage(userQuestion);
+        const result = await chat.sendMessage(finalPrompt);
         return result.response.text();
 
     } catch (error) {
@@ -236,7 +248,7 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
             activeConversations.set(customerPhone, chat);
 
             try {
-                const result = await chat.sendMessage(userQuestion);
+                const result = await chat.sendMessage(finalPrompt);
                 return result.response.text();
             } catch (fallbackError) {
                 console.error("🚨 FALLBACK AI INSTANT CRASH:", fallbackError.message);
@@ -275,24 +287,41 @@ app.post('/webhook', async (req, res) => {
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
 
-            // --- ADMIN GOD MODE ---
+            
+            // --- ADMIN CONTROLS ---
             if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
                 const command = customerText.toLowerCase().trim();
                 let adminReply = "";
 
                 if (command === '/close') {
                     manualShopState = 'closed';
-                    adminReply = "🛑 GOD MODE: Shop is now manually CLOSED.";
+                    adminReply = "🛑 ADMIN: Shop is now manually CLOSED.";
                 } else if (command === '/open') {
                     manualShopState = 'open';
-                    adminReply = "✅ GOD MODE: Shop is now manually OPEN.";
+                    adminReply = "✅ ADMIN: Shop is now manually OPEN.";
                 } else if (command === '/auto') {
                     manualShopState = 'auto';
-                    adminReply = "⏱️ GOD MODE: Shop is back on AUTO mode.";
+                    adminReply = "⏱️ ADMIN: Shop is back on AUTO mode.";
                 } else if (command === '/pause') {
                     manualShopState = 'closed'; 
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
-                    adminReply = "⏸️ GOD MODE: Shop is PAUSED.";
+                    adminReply = "⏸️ ADMIN: Shop is PAUSED.";
+                
+                // --- NEW INVENTORY COMMANDS ---
+                } else if (command === '/out beef') {
+                    isBeefAvailable = false;
+                    adminReply = "🥩 ADMIN: Beef is OUT OF STOCK. The bot will now redirect people to Chicken.";
+                } else if (command === '/out chicken') {
+                    isChickenAvailable = false;
+                    adminReply = "🍗 ADMIN: Chicken is OUT OF STOCK. The bot will now redirect people to Beef.";
+                } else if (command === '/restock beef') {
+                    isBeefAvailable = true;
+                    adminReply = "🥩 ADMIN: Beef is RESTOCKED. The bot is selling it again.";
+                } else if (command === '/restock chicken') {
+                    isChickenAvailable = true;
+                    adminReply = "🍗 ADMIN: Chicken is RESTOCKED. The bot is selling it again.";
+
+                // --- PRICE INJECTION ---
                 } else if (command.startsWith('/price')) {
                     const parts = command.split(' ');
                     if (parts.length >= 3) {
@@ -325,7 +354,7 @@ app.post('/webhook', async (req, res) => {
                         adminReply = `❌ Invalid format. Please use: /price SP-XXXX 500`;
                     }
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, or /price SP-XXXX AMOUNT.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, or /price SP-XXXX AMOUNT.";
                 }
 
                 await axios({
@@ -343,10 +372,9 @@ app.post('/webhook', async (req, res) => {
                 });
                 return res.sendStatus(200); 
             }
-            
             // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
-                let excuseToGive = "We are currently closed for the night! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow. Drop your order then and we'll get it right to you!";
+                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow.\n\nThanks!";
                 if (pauseMessage !== "") excuseToGive = pauseMessage;
 
                 await axios({
