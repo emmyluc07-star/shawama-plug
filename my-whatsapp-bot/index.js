@@ -11,35 +11,40 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
 Your job is to chat with customers, answer their questions, take orders, and finalize details.
 
-**MENU**
-**SHAWARMA**
-* Solo (single sausage): Beef N3200 | Chicken N3700
-* Mini (double sausage): Beef N4000 | Chicken N4500
-* Jumbo (triple sausage): Beef N4800 | Chicken N5300
-* Night Class: Beef N1600 | Chicken N2200
+*MENU*
+*SHAWARMA*
+~ Solo (single sausage): Beef N3200 | Chicken N3700
+~ Mini (double sausage): Beef N4000 | Chicken N4500
+~ Jumbo (triple sausage): Beef N4800 | Chicken N5300
+~ Night Class: Beef N1600 | Chicken N2200
 
-**BREADWARMA**
-* JUST ME: Beef N2500 | Chicken N3000
-* BIG BOY: Beef N3500 | Chicken N4000
+*BREADWARMA*
+~ JUST ME: Beef N2500 | Chicken N3000
+~ BIG BOY: Beef N3500 | Chicken N4000
 
-**EXTRAS**
-* Cheese: N1500 | Beef: N700 | Cream: N600 | Sausage: N350 (Breadwarma ONLY)
+*EXTRAS*
+~ Cheese: N1500 | Beef: N700 | Cream: N600 | Sausage: N350 (Breadwarma ONLY)
 
-**DELIVERY ZONES**
-* A: Southgate (or close by) - N500
-* B: Northgate (or close by) - N700
-* C: Inside FUTA School Hostels - N400
-* D: Inside FUTA Campus (Academic areas/specific places) - N600
+*DELIVERY ZONES*
+(A): Southgate (or close by) - N800
+(B): Northgate (or close by) - N2000
+(C): Inside FUTA School Hostels - N400
+(D): Inside FUTA Campus (Academic areas/specific places) - N600
+(E): Other Locations (Requires custom price from Manager)
 
-**BUSINESS INFO (For Answering FAQs)**
-* Hours: 4:00 PM to 9:00 PM.
-* Official Contact Number: 08133728255
+*BUSINESS INFO (For Answering FAQs)*
+~ Hours: 4:00 PM to 9:00 PM.
+~ Official Contact Number: 08133728255
+~ Locations: 
+. Aluta Market Opposite Annex 3, FUTA Campus. 
+. Yeklox Complex Oppisite Embassy Junction, FUTA Southgate.
+. T Junction at Westgate.
 
 CRITICAL RULES & WORKFLOW:
 
 STEP 1: GENERAL CUSTOMER CARE & CHATTING
 * Be warm, conversational, and helpful. 
-* If a customer asks general questions (e.g., "What is a Breadwarma?", "Where are you located?", "What time do you close?"), use the info provided to answer them naturally!
+* If a customer asks general questions (e.g., "What is a Breadwarma?", "Where are you located?"), use the info provided to answer them naturally!
 * Do NOT instantly escalate to a human for simple questions or casual chatting. Handle it yourself!
 * When they are ready, seamlessly transition into taking their order.
 
@@ -52,10 +57,13 @@ STEP 3: PICKUP OR DELIVERY
 * Ask: "Will this be for Pickup or Delivery?"
 * IF PICKUP: Ask for the pickup name.
 * IF DELIVERY: 
-  - Present the Delivery Zones (A, B, C, D) and ask them to select one. 
-  - If they request a location completely outside these zones, say: "My delivery map doesn't cover that exact spot yet! Please message our human manager directly at 08133728255, and they will arrange a special delivery for you."
-  - Once they select a valid zone (A, B, C, or D), calculate the new total including the delivery fee.
-  - THEN, ask for their EXACT location/hostel name and an active phone number for the rider.
+  - Present the Delivery Zones (A, B, C, D, E) and ask them to select one. 
+  - If they choose A, B, C, or D: calculate the new total including the delivery fee, THEN ask for their EXACT location and active phone number for the rider.
+  - IF THEY CHOOSE ZONE E:
+    1. Ask for their EXACT delivery address and active phone number.
+    2. Once they provide it, you MUST output this exact tag: [PRICE_REQUEST]
+    3. Then say: "Please give me just a moment! I am checking with our dispatch rider to get the exact delivery fee for your location. 🛵💨"
+    4. STOP. Do not proceed to Step 4 until the system updates you with the price.
 
 STEP 4: PRE-CHECKOUT REVIEW
 * BEFORE creating the kitchen ticket, you MUST summarize their entire cart (Food + Extras + Delivery Fee).
@@ -72,9 +80,8 @@ Order: 1x Jumbo Beef, 1x Extra Cheese
 Total: N6800
 [END_TICKET]
 
-* After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: [7087505608 OPAY Emmanuel abiola ajayi]."
-* NEVER confirm payments yourself. After giving the OPAY details, you MUST say: "Please upload your receipt screenshot here! Our human manager will confirm your order and will message you directly from our official number (08133728255) with your pickup/delivery time."
-* IMPORTANT MARKETING HOOK: Right at the end of this message, add: "P.S. Don't forget to save our official WhatsApp number [08133728255] to your contacts so you can view our status for mouth-watering updates and flash sales! 😋"
+* After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: 7087505608 OPAY Emmanuel abiola ajayi."
+* NEVER confirm payments yourself. After giving the OPAY details, you MUST say: "Upload your receipt screenshot here! Our human representative will confirm your order via (08133728255) and respond to you."
 
 STEP 6: POST-PAYMENT & ADD-ONS
 * If a customer texts you again AFTER they have already reached Step 5, politely ask: "Has our manager confirmed your transaction from 08133728255 yet?"
@@ -98,12 +105,13 @@ STEP 7: THE SMART ESCAPE HATCH (COMPLAINTS & HUMAN REQUESTS)
 
 STEP 8: THE REBOOT APOLOGY (SERVER AMNESIA)
 * Because you run on a cloud server, your memory resets if the chat is inactive for 15 minutes. 
-* Use your reasoning: If a customer seems confused that you don't remember their order, mentions an ongoing order, or acts like you should know what they are talking about (even if their phrasing is weird), realize that your memory might have reset.
+* Use your reasoning: If a customer seems confused that you don't remember their order, realize that your memory might have reset.
 * DO NOT argue with them or show them the menu blindly. 
 * Say: "I am so sorry! My system had a quick network refresh and I lost my memory of your cart. 🥺 Could you please tell me your order one more time so I can rush it to the kitchen?"
   
 FORMATTING (CRITICAL):
-* Never send long walls of text. Use double line breaks between paragraphs. Use bullet points for lists. Use *asterisks* to bold food names and prices.`;
+* Never send long walls of text. Use double line breaks between paragraphs. Use bullet points for lists. Use *asterisks* to bold food names(e.g shawarma) and prices.
+* Try not to write long texts, try to keep them short as you can. And you can replace the texts with a list type of what ever you are trying to tell the customer.`;
 
 // --- DUAL AI MODELS (PRIMARY & FALLBACK) ---
 const primaryModel = genAI.getGenerativeModel({ 
@@ -122,11 +130,10 @@ const orderCodes = new Map();
 // --- ADMIN BROADCAST LIST ---
 const ADMIN_NUMBERS = [
     '2347087505608', // You
-    //'2347025812501', // Example: CEO
-    // '2348098765432'  // Example: Kitchen Manager
+    '2348133728255'  // Kitchen Manager
 ];
 
-// --- ORDER ID GENERATOR ---
+// --- ORDER ID GENERATOR & LOOKUP ---
 function getOrderCode(customerPhone) {
     if (!orderCodes.has(customerPhone)) {
         const newCode = "SP-" + Math.floor(1000 + Math.random() * 9000);
@@ -135,9 +142,16 @@ function getOrderCode(customerPhone) {
     return orderCodes.get(customerPhone);
 }
 
+function getPhoneByOrderCode(searchCode) {
+    for (let [phone, code] of orderCodes.entries()) {
+        if (code === searchCode) return phone;
+    }
+    return null;
+}
+
 // --- ADMIN GOD MODE STATE ---
-let manualShopState = 'auto'; // Can be 'auto', 'open', or 'closed'
-let pauseMessage = ""; // Holds our temporary excuse
+let manualShopState = 'auto'; 
+let pauseMessage = ""; 
 
 // --- THE DIGITAL BOUNCER (WORKING HOURS) ---
 function isShopOpen() {
@@ -223,8 +237,43 @@ app.post('/webhook', async (req, res) => {
                     manualShopState = 'closed'; 
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
                     adminReply = "⏸️ GOD MODE: Shop is PAUSED. Customers will be told we are running late!";
+                
+                // NEW: PRICE INJECTION COMMAND
+                } else if (command.startsWith('/price')) {
+                    const parts = command.split(' ');
+                    if (parts.length >= 3) {
+                        const targetOrder = parts[1].toUpperCase();
+                        const priceAmount = parts[2];
+                        const targetPhone = getPhoneByOrderCode(targetOrder);
+
+                        if (targetPhone) {
+                            // Inject secret message to the AI
+                            const injectionPrompt = `[SYSTEM MESSAGE]: The manager has confirmed the delivery fee for Zone E is N${priceAmount}. Tell the customer this good news, add it to their total, and ask if their order is complete to proceed to checkout!`;
+                            const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
+
+                            // Send AI's new reply to the waiting customer
+                            await axios({
+                                method: 'POST',
+                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                                headers: {
+                                    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                                    'Content-Type': 'application/json',
+                                },
+                                data: {
+                                    messaging_product: 'whatsapp',
+                                    to: targetPhone,
+                                    text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() },
+                                },
+                            });
+                            adminReply = `✅ Done! I told the customer delivery is N${priceAmount} and resumed their chat.`;
+                        } else {
+                            adminReply = `❌ Error: Could not find an active chat for ${targetOrder}.`;
+                        }
+                    } else {
+                        adminReply = `❌ Invalid format. Please use: /price SP-XXXX 500`;
+                    }
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, or /auto.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, or /price SP-XXXX AMOUNT.";
                 }
 
                 await axios({
@@ -283,18 +332,20 @@ app.post('/webhook', async (req, res) => {
                     data: {
                         messaging_product: 'whatsapp',
                         to: customerPhone,
-                        text: { body: aiReply.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').trim() },
+                        text: { body: aiReply.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').trim() },
                     },
                 });
 
-               // CEO TICKET ROUTER (Catches Orders AND Complaints, slices off marketing text)
-                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]')) {
+               // CEO TICKET ROUTER
+                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]')) {
                     const uniqueCode = getOrderCode(customerPhone);
                     
                     // 1. Determine the alert type
                     let alertType = "🚨 KITCHEN ALERT 🚨";
                     if (aiReply.includes('[HUMAN_NEEDED]')) {
                         alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨\nTap the number below to message them immediately!";
+                    } else if (aiReply.includes('[PRICE_REQUEST]')) {
+                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500\n(Replace 500 with the actual fee)`;
                     }
 
                     // 2. Chop off the marketing fluff so the kitchen only sees the ticket!
@@ -316,7 +367,7 @@ app.post('/webhook', async (req, res) => {
                                 data: {
                                     messaging_product: 'whatsapp',
                                     to: adminPhone, 
-                                    text: { body: `${alertType}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${cleanAdminAlert}` },
+                                    text: { body: `${alertType}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${cleanAdminAlert.replace('[PRICE_REQUEST]', '')}` },
                                 },
                             });
                         } catch (err) {
