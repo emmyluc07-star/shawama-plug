@@ -93,11 +93,11 @@ STEP 3: PICKUP OR DELIVERY
 * IF DELIVERY: 
   - Present the Delivery Zones (A, B, C, D, E) and ask them to select one. 
   - If they choose A, B, C, or D: calculate the new total including the delivery fee, THEN ask for their EXACT location and active phone number for the rider.
-  - IF THEY CHOOSE ZONE E:
-    1. Ask for their EXACT delivery address and active phone number.
-    2. Once they provide it, you MUST output this exact tag: [PRICE_REQUEST]
-    3. Then say: "Please give me just a moment! I am checking with our dispatch rider to get the exact delivery fee for your location. 🛵💨"
-    4. STOP. Do not proceed to Step 4 until the system updates you with the price.
+  - IF THEY CHOOSE ZONE E (CRITICAL TWO-PART STEP):
+    PART 1: Ask for their EXACT delivery address and active phone number. YOU MUST STOP HERE. Do NOT say anything else. Wait for the customer to reply.
+    PART 2: ONLY AFTER the customer replies with their actual address, output this exact tag: [PRICE_REQUEST]
+    PART 3: Along with the tag, say: "Please give me just a moment! I am checking with our dispatch rider to get the exact delivery fee for your location. 🛵💨"
+    PART 4: STOP. Do not proceed to Step 4 until the system updates you with the price.
 
 STEP 4: PRE-CHECKOUT REVIEW
 * BEFORE creating the kitchen ticket, you MUST summarize their entire cart (Food + Extras + Delivery Fee).
@@ -275,6 +275,7 @@ app.post('/webhook', async (req, res) => {
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
 
+            // --- ADMIN GOD MODE ---
             if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
                 const command = customerText.toLowerCase().trim();
                 let adminReply = "";
@@ -343,6 +344,7 @@ app.post('/webhook', async (req, res) => {
                 return res.sendStatus(200); 
             }
             
+            // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
                 let excuseToGive = "We are currently closed for the night! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow. Drop your order then and we'll get it right to you!";
                 if (pauseMessage !== "") excuseToGive = pauseMessage;
@@ -381,26 +383,42 @@ app.post('/webhook', async (req, res) => {
                     },
                 });
 
+                // --- CEO TICKET ROUTER ---
                 if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]')) {
                     const uniqueCode = getOrderCode(customerPhone);
                     
+                    // Generate exact Nigerian Date & Time
+                    const now = new Date();
+                    const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
+                    
                     let alertType = "🚨 KITCHEN ALERT 🚨";
+                    let adminMessageContent = "";
+
+                    // 1. Complaint Route
                     if (aiReply.includes('[HUMAN_NEEDED]')) {
                         alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨\nTap the number below to message them immediately!";
+                        adminMessageContent = `Customer said:\n"${customerText}"`;
+                    
+                    // 2. Zone E Price Request Route
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
                         alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
-                    }
-
-                    let cleanAdminAlert = aiReply;
-                    if (aiReply.includes('[END_TICKET]')) {
-                        cleanAdminAlert = aiReply.split('[END_TICKET]')[0].trim();
-                    }
-
-                    // --- INJECT THE SPREADSHEET SAVER HERE! ---
-                    if (aiReply.includes('[NEW_ORDER]')) {
-                        saveOrderToDatabase(customerPhone, cleanAdminAlert.replace('[NEW_ORDER]', '').trim(), uniqueCode);
-                    }
+                        adminMessageContent = `Customer's Address:\n"${customerText}"`;
                     
+                    // 3. New Order Route
+                    } else {
+                        let cleanAdminAlert = aiReply;
+                        if (aiReply.includes('[END_TICKET]')) {
+                            cleanAdminAlert = aiReply.split('[END_TICKET]')[0].trim();
+                        }
+                        adminMessageContent = cleanAdminAlert.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').trim();
+
+                        // --- SPREADSHEET SAVER ---
+                        if (aiReply.includes('[NEW_ORDER]')) {
+                            saveOrderToDatabase(customerPhone, adminMessageContent, uniqueCode);
+                        }
+                    }
+
+                    // Forward to all Admin numbers
                     for (const adminPhone of ADMIN_NUMBERS) {
                         try {
                             await axios({
@@ -413,7 +431,7 @@ app.post('/webhook', async (req, res) => {
                                 data: {
                                     messaging_product: 'whatsapp',
                                     to: adminPhone, 
-                                    text: { body: `${alertType}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${cleanAdminAlert.replace('[PRICE_REQUEST]', '').replace('[NEW_ORDER]', '')}` },
+                                    text: { body: `${alertType}\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${adminMessageContent}` },
                                 },
                             });
                         } catch (err) {
@@ -425,6 +443,7 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to send text message.", error);
             }
             
+        // --- IMAGE/RECEIPT HANDLER ---
         } else if (message?.type === 'image') {
             const customerPhone = message.from;
             const mediaId = message.image.id;
@@ -447,8 +466,13 @@ app.post('/webhook', async (req, res) => {
 
                 const uniqueCode = getOrderCode(customerPhone); 
                 
+                // Generate exact Nigerian Date & Time
+                const now = new Date();
+                const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
+                
                 for (const adminPhone of ADMIN_NUMBERS) {
                     try {
+                        // Forward Image
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -464,6 +488,7 @@ app.post('/webhook', async (req, res) => {
                             },
                         });
 
+                        // Forward Text Details with Timestamp
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -474,7 +499,7 @@ app.post('/webhook', async (req, res) => {
                             data: {
                                 messaging_product: 'whatsapp',
                                 to: adminPhone, 
-                                text: { body: `🚨 RECEIPT ALERT 🚨\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order, tap their number above to message them directly from your personal WhatsApp!` },
+                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order, tap their number above to message them directly from your personal WhatsApp!` },
                             },
                         });
                     } catch (err) {
@@ -485,6 +510,7 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to process image block.", error);
             }
 
+        // --- AUDIO HANDLER ---
         } else if (message?.type === 'audio') {
             const customerPhone = message.from;
             const phoneId = value.metadata.phone_number_id;
