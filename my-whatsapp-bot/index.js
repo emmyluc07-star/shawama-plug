@@ -2,10 +2,44 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleSpreadsheet } = require('google-spreadsheet');
+const { JWT } = require('google-auth-library');
 
 const app = express();
 app.use(express.json());
 
+// --- GOOGLE SHEETS DATABASE SETUP ---
+// This automatically fixes the \n issue from Render!
+const serviceAccountAuth = new JWT({
+    email: process.env.GOOGLE_CLIENT_EMAIL,
+    key: process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+});
+const doc = new GoogleSpreadsheet(process.env.SPREADSHEET_ID, serviceAccountAuth);
+
+async function saveOrderToDatabase(customerPhone, orderDetails, orderId) {
+    try {
+        await doc.loadInfo(); 
+        const sheet = doc.sheetsByIndex[0]; // Grabs the very first tab
+        
+        // Get precise Nigerian time
+        const now = new Date();
+        const dateStr = now.toLocaleString("en-US", { timeZone: "Africa/Lagos" });
+        
+        await sheet.addRow([
+            dateStr,          // A: Date
+            "+" + customerPhone, // B: Phone Number
+            orderDetails,     // C: Order Details
+            "Pending",        // D: Total Price (Leave pending for admin confirmation)
+            orderId           // E: Order ID
+        ]);
+        console.log(`✅ SUCCESS: Order ${orderId} saved to Google Sheets!`);
+    } catch (error) {
+        console.error("❌ DATABASE ERROR: Failed to save to Google Sheets:", error.message);
+    }
+}
+
+// --- AI SETUP ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
@@ -115,7 +149,7 @@ FORMATTING (CRITICAL):
 * Use ALL CAPS for emphasis if needed, rather than bolding.
 * Never send long walls of text. Use double line breaks between paragraphs. Use dashes (-) for bullet points.
 * Try not to write long texts, keep them as short as you can. Replace long paragraphs with clean, dashed lists whenever you are explaining things to a customer.`;
-// --- DUAL AI MODELS (PRIMARY & FALLBACK) ---
+
 const primaryModel = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash-lite",
     systemInstruction: systemInstruction 
@@ -135,7 +169,6 @@ const ADMIN_NUMBERS = [
     '2348133728255'  // Kitchen Manager
 ];
 
-// --- ORDER ID GENERATOR & LOOKUP ---
 function getOrderCode(customerPhone) {
     if (!orderCodes.has(customerPhone)) {
         const newCode = "SP-" + Math.floor(1000 + Math.random() * 9000);
@@ -151,11 +184,9 @@ function getPhoneByOrderCode(searchCode) {
     return null;
 }
 
-// --- ADMIN GOD MODE STATE ---
 let manualShopState = 'auto'; 
 let pauseMessage = ""; 
 
-// --- THE DIGITAL BOUNCER (WORKING HOURS) ---
 function isShopOpen() {
     if (manualShopState === 'open') return true;
     if (manualShopState === 'closed') return false;
@@ -169,14 +200,12 @@ function isShopOpen() {
 
     return currentHour >= openingHour && currentHour < closingHour;
 }
-// --- HELPER: TIME DELAY ---
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- THE PATIENT BOT (AUTO-RETRY & STICKY FALLBACK) ---
 async function askGemini(customerPhone, userQuestion, retries = 2) {
     let chat = activeConversations.get(customerPhone);
 
-    // 1. If no chat exists, start a fresh one on the Primary model
     if (!chat) {
         chat = primaryModel.startChat({ history: [] });
         chat.activeModel = 'primary'; 
@@ -184,21 +213,18 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
     }
 
     try {
-        // 2. Try to send the message
         const result = await chat.sendMessage(userQuestion);
         return result.response.text();
 
     } catch (error) {
         console.warn(`⚠️ ${chat.activeModel.toUpperCase()} AI failed. Error:`, error.message);
 
-        // 3. THE PATIENT BOT: If we hit a limit, wait 3 seconds and try again!
         if (retries > 0) {
             console.log(`⏳ Rate limit hit! Waiting 3 seconds... (${retries} retries left)`);
-            await delay(3000); // Pauses the code for 3 seconds
-            return await askGemini(customerPhone, userQuestion, retries - 1); // Try again
+            await delay(3000); 
+            return await askGemini(customerPhone, userQuestion, retries - 1); 
         }
 
-        // 4. If retries are completely exhausted, switch to fallback
         if (chat.activeModel === 'primary') {
             console.log("🔄 Retries failed. Rerouting user to Fallback AI and transferring memory...");
             
@@ -244,32 +270,28 @@ app.post('/webhook', async (req, res) => {
         const value = changes?.value;
         const message = value?.messages?.[0];
 
-       // --- BLOCK 1: HANDLE TEXT MESSAGES & KITCHEN TICKETS ---
         if (message?.type === 'text') {
             const customerPhone = message.from;
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
 
-            // --- BLOCK 0: ADMIN GOD MODE INTERCEPTOR ---
             if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
                 const command = customerText.toLowerCase().trim();
                 let adminReply = "";
 
                 if (command === '/close') {
                     manualShopState = 'closed';
-                    adminReply = "🛑 GOD MODE: Shop is now manually CLOSED. The bot will send the standard night message.";
+                    adminReply = "🛑 GOD MODE: Shop is now manually CLOSED.";
                 } else if (command === '/open') {
                     manualShopState = 'open';
-                    adminReply = "✅ GOD MODE: Shop is now manually OPEN. The bot is taking orders again!";
+                    adminReply = "✅ GOD MODE: Shop is now manually OPEN.";
                 } else if (command === '/auto') {
                     manualShopState = 'auto';
-                    adminReply = "⏱️ GOD MODE: Shop is back on AUTO mode. It will follow the standard schedule.";
+                    adminReply = "⏱️ GOD MODE: Shop is back on AUTO mode.";
                 } else if (command === '/pause') {
                     manualShopState = 'closed'; 
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
-                    adminReply = "⏸️ GOD MODE: Shop is PAUSED. Customers will be told we are running late!";
-                
-                // NEW: PRICE INJECTION COMMAND
+                    adminReply = "⏸️ GOD MODE: Shop is PAUSED.";
                 } else if (command.startsWith('/price')) {
                     const parts = command.split(' ');
                     if (parts.length >= 3) {
@@ -278,11 +300,9 @@ app.post('/webhook', async (req, res) => {
                         const targetPhone = getPhoneByOrderCode(targetOrder);
 
                         if (targetPhone) {
-                            // Inject secret message to the AI
                             const injectionPrompt = `[SYSTEM MESSAGE]: The manager has confirmed the delivery fee for Zone E is N${priceAmount}. Tell the customer this good news, add it to their total, and ask if their order is complete to proceed to checkout!`;
                             const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
 
-                            // Send AI's new reply to the waiting customer
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -323,13 +343,9 @@ app.post('/webhook', async (req, res) => {
                 return res.sendStatus(200); 
             }
             
-            // --- NORMAL CUSTOMER FLOW ---
             if (!isShopOpen()) {
                 let excuseToGive = "We are currently closed for the night! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow. Drop your order then and we'll get it right to you!";
-                
-                if (pauseMessage !== "") {
-                    excuseToGive = pauseMessage;
-                }
+                if (pauseMessage !== "") excuseToGive = pauseMessage;
 
                 await axios({
                     method: 'POST',
@@ -348,11 +364,9 @@ app.post('/webhook', async (req, res) => {
             }
             
             pauseMessage = "";
-            
             const aiReply = await askGemini(customerPhone, customerText);
 
             try {
-                // Reply to Customer (Hides all secret tags from their view!)
                 await axios({
                     method: 'POST',
                     url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -367,25 +381,26 @@ app.post('/webhook', async (req, res) => {
                     },
                 });
 
-               // CEO TICKET ROUTER
                 if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]')) {
                     const uniqueCode = getOrderCode(customerPhone);
                     
-                    // 1. Determine the alert type
                     let alertType = "🚨 KITCHEN ALERT 🚨";
                     if (aiReply.includes('[HUMAN_NEEDED]')) {
                         alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨\nTap the number below to message them immediately!";
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
-                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500\n(Replace 500 with the actual fee)`;
+                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
                     }
 
-                    // 2. Chop off the marketing fluff so the kitchen only sees the ticket!
                     let cleanAdminAlert = aiReply;
                     if (aiReply.includes('[END_TICKET]')) {
                         cleanAdminAlert = aiReply.split('[END_TICKET]')[0].trim();
                     }
+
+                    // --- INJECT THE SPREADSHEET SAVER HERE! ---
+                    if (aiReply.includes('[NEW_ORDER]')) {
+                        saveOrderToDatabase(customerPhone, cleanAdminAlert.replace('[NEW_ORDER]', '').trim(), uniqueCode);
+                    }
                     
-                    // 3. Send to all admins
                     for (const adminPhone of ADMIN_NUMBERS) {
                         try {
                             await axios({
@@ -398,7 +413,7 @@ app.post('/webhook', async (req, res) => {
                                 data: {
                                     messaging_product: 'whatsapp',
                                     to: adminPhone, 
-                                    text: { body: `${alertType}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${cleanAdminAlert.replace('[PRICE_REQUEST]', '')}` },
+                                    text: { body: `${alertType}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${cleanAdminAlert.replace('[PRICE_REQUEST]', '').replace('[NEW_ORDER]', '')}` },
                                 },
                             });
                         } catch (err) {
@@ -410,7 +425,6 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to send text message.", error);
             }
             
-        // --- BLOCK 2: HANDLE RECEIPT SCREENSHOTS ---
         } else if (message?.type === 'image') {
             const customerPhone = message.from;
             const mediaId = message.image.id;
@@ -471,7 +485,6 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to process image block.", error);
             }
 
-        // --- BLOCK 3: HANDLE VOICE NOTES (AUDIO) ---
         } else if (message?.type === 'audio') {
             const customerPhone = message.from;
             const phoneId = value.metadata.phone_number_id;
