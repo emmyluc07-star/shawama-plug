@@ -252,11 +252,11 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
                 return result.response.text();
             } catch (fallbackError) {
                 console.error("🚨 FALLBACK AI INSTANT CRASH:", fallbackError.message);
-                return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your mesmessage iin about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
+                return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your message in about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
             }
         } else {
             console.error("🚨 TOTAL AI CRASH: Both models failed.");
-            return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your mesmessage iin about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
+            return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your message in about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
         }
     }
 }
@@ -287,7 +287,6 @@ app.post('/webhook', async (req, res) => {
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
 
-            
             // --- ADMIN CONTROLS ---
             if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
                 const command = customerText.toLowerCase().trim();
@@ -327,7 +326,8 @@ app.post('/webhook', async (req, res) => {
                     if (parts.length >= 3) {
                         const targetOrder = parts[1].toUpperCase();
                         const priceAmount = parts[2];
-                        const targetPhone = getPhoneByOrderCode(targetOrder);
+                        let targetPhone = getPhoneByOrderCode(targetOrder);
+                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
                         if (targetPhone) {
                             const injectionPrompt = `[SYSTEM MESSAGE]: The manager has confirmed the delivery fee for Zone E is N${priceAmount}. Tell the customer Delivery Confirmed, add it to their total, and ask if their order is complete to proceed to checkout!`;
@@ -353,34 +353,17 @@ app.post('/webhook', async (req, res) => {
                     } else {
                         adminReply = `❌ Invalid format. Please use: /price SP-XXXX 500`;
                     }
-                } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, or /price SP-XXXX AMOUNT.";
-                }
-
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        text: { body: adminReply },
-                    },
-                });
-                return res.sendStatus(200); 
-            }
-            // --- ORDER CONFIRMATION INJECTION ---
+                
+                // --- ORDER CONFIRMATION INJECTION ---
                 } else if (command.startsWith('/confirm')) {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
                         const targetOrder = parts[1].toUpperCase();
-                        const targetPhone = getPhoneByOrderCode(targetOrder);
+                        let targetPhone = getPhoneByOrderCode(targetOrder);
+                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
                         if (targetPhone) {
-                            const injectionPrompt = `[SYSTEM MESSAGE]: The manager has officially confirmed the payment and order for ${targetOrder}. Payment confirmed! Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If they chose Delivery, say 10-25 mins. Keep it very short, warm, and exciting!`;;
+                            const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If they chose Delivery, say 10-25 mins. Keep it very short, warm, and exciting!`;
                             const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
 
                             // Send the good news to the customer
@@ -404,10 +387,8 @@ app.post('/webhook', async (req, res) => {
                     } else {
                         adminReply = `❌ Invalid format. Please use: /confirm SP-XXXX`;
                     }
-               } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, or /confirm SP-XXXX.";
-                }
-            // --- DIRECT CUSTOMER MESSAGE ---
+                
+                // --- DIRECT CUSTOMER MESSAGE ---
                 } else if (command.startsWith('/msg')) {
                     // We use customerText here so we don't lose your capital letters and punctuation
                     const parts = customerText.split(' '); 
@@ -418,8 +399,6 @@ app.post('/webhook', async (req, res) => {
                         let targetPhone = getPhoneByOrderCode(targetIdentifier);
                         
                         // --- THE BULLETPROOF FALLBACK ---
-                        // If the bot forgot the SP- code because it slept, 
-                        // check if the admin just typed the phone number directly instead!
                         if (!targetPhone && targetIdentifier.startsWith('234')) {
                             targetPhone = targetIdentifier; 
                         }
@@ -452,6 +431,23 @@ app.post('/webhook', async (req, res) => {
                 } else {
                     adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, or /msg SP-XXXX text.";
                 }
+
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: {
+                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    data: {
+                        messaging_product: 'whatsapp',
+                        to: customerPhone,
+                        text: { body: adminReply },
+                    },
+                });
+                return res.sendStatus(200); 
+            }
+            
             // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
                 let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow.\n\nThanks!";
@@ -509,7 +505,7 @@ app.post('/webhook', async (req, res) => {
                     
                     // 2. Zone E Price Request Route
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
-                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} PriceXXX`;
+                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
                         adminMessageContent = `Customer's Address:\n"${customerText}"`;
                     
                     // 3. New Order Route
@@ -596,7 +592,7 @@ app.post('/webhook', async (req, res) => {
                             },
                         });
 
-                        // Forward Text Details with Timestamp
+                        // Forward Text Details with Timestamp & `/confirm` prompt
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -607,7 +603,7 @@ app.post('/webhook', async (req, res) => {
                             data: {
                                 messaging_product: 'whatsapp',
                                 to: adminPhone, 
-                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order, tap their number above to message them directly from your personal WhatsApp!` },
+                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order, reply to me with:\n/confirm ${uniqueCode}` },
                             },
                         });
                     } catch (err) {
