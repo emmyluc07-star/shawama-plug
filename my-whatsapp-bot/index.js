@@ -95,10 +95,18 @@ Your job is to chat with customers, answer their questions, take orders, and fin
 *EXTRAS*
 ~ Cheese: N1500 | Beef: N700 | Cream: N600 | Sausage: N350 (Breadwarma ONLY)
 
+*CHICKEN AND CHIPS*
+~ GOLDEN
+    3 piece chicken wings 🍗 | N3500
+~ BELLEFUL 
+    3 piece chicken 🍗 and chips 🍟 | N6000
+~ PREMIUM    
+    4 piece chicken 🍗 and chips 🍟 | N7500
+
 *DELIVERY ZONES*
-(A): Southgate (or close by) - N800
-(B): Northgate (or close by) - N2000
-(C): Inside FUTA School Hostels - N400
+(A): Southgate (close by) - N800
+(B): Northgate (close by) - N2000
+(C): Inside FUTA Campus Hostels - N400
 (D): Inside FUTA Campus (Academic areas/specific places) - N600
 (E): Other Locations (Requires custom price from Manager)
 
@@ -150,8 +158,8 @@ Order: 1x Jumbo Beef, 1x Extra Cheese
 Total: N6800
 [END_TICKET]
 
-* After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: 7087505608 OPAY Emmanuel abiola ajayi."
-* NEVER confirm payments yourself. After giving the OPAY details, you MUST say: "Upload your receipt screenshot right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
+* After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: 5875254742 \n\nMoniepoint \nShawarma Plug Crib.."
+* NEVER confirm payments yourself. After giving the BANK details, you MUST say: "Upload your receipt screenshot right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
 
 STEP 6: POST-PAYMENT & ADD-ONS
 * If a customer texts you again AFTER they upload their receipt, check your chat history! 
@@ -166,8 +174,10 @@ STEP 6: POST-PAYMENT & ADD-ONS
 
 STEP 7: THE SMART ESCAPE HATCH (COMPLAINTS & HUMAN REQUESTS)
 * ONLY use this step if a customer has a serious complaint (e.g., dropped food, cold food, rider is late), wants a refund, OR explicitly demands to speak to a human/manager.
-* You MUST output this exact tag: [HUMAN_NEEDED]
-* Then say: "I am so sorry about this! I am alerting our human manager right now. They will message you directly from our official number (08133728255) to help sort this out immediately."
+* Check your chat history FIRST! 
+* IF YOU ALREADY ESCALATED: DO NOT output the tag again. Just politely stall: "The manager is looking into this right now and will text you from 08133728255 shortly! 🙏"
+* IF THIS IS THE FIRST TIME ESCALATING: You MUST output the secret tag exactly like this at the very beginning of your message: [HUMAN_NEEDED]
+* Directly after the tag, say: "I am so sorry about this! I am alerting our human manager right now. They will message you directly from our official number (08133728255) to help sort this out immediately."
 
 STEP 8: THE REBOOT APOLOGY (SERVER AMNESIA)
 * Because you run on a cloud server, your memory resets if the chat is inactive for 15 minutes. 
@@ -194,12 +204,17 @@ const fallbackModel = genAI.getGenerativeModel({
 
 const activeConversations = new Map();
 const orderCodes = new Map(); 
+const humanOverride = new Set(); // Stores phone numbers currently talking to a human
 
 // --- ADMIN BROADCAST LIST ---
 const ADMIN_NUMBERS = [
     '2347087505608', // You
     '2348133728255'  // Kitchen Manager
 ];
+
+// --- SAAS SUBSCRIPTION STATE ---
+let isSubscriptionActive = true; 
+const SUPER_ADMIN = '2347087505608'; // YOUR phone number. Only you can control the Kill Switch.
 
 function getOrderCode(customerPhone) {
     if (!orderCodes.has(customerPhone)) {
@@ -318,6 +333,27 @@ app.post('/webhook', async (req, res) => {
             const customerPhone = message.from;
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
+
+            // --- SAAS KILL SWITCH INTERCEPTOR ---
+            if (!isSubscriptionActive && customerPhone !== SUPER_ADMIN) {
+                let suspendMessage = "";
+                
+                // If the FUTA CEO tries to use a command while suspended
+                if (ADMIN_NUMBERS.includes(customerPhone)) {
+                    suspendMessage = "🚨 SYSTEM SUSPENDED 🚨\nYour AI Assistant subscription is overdue or disabled. Please contact your developer to reactivate the system.";
+                } else {
+                    // If a FUTA student tries to order while suspended
+                    suspendMessage = "Our AI ordering system is currently offline for maintenance! 🛠️\n\nPlease call or WhatsApp 08133728255 to place your order directly with the kitchen.";
+                }
+
+                await axios({
+                    method: 'POST',
+                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                    headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                    data: { messaging_product: 'whatsapp', to: customerPhone, text: { body: suspendMessage } },
+                });
+                return res.sendStatus(200); // Stop the code completely
+            }
 
             // --- ADMIN CONTROLS ---
             if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
@@ -459,6 +495,7 @@ app.post('/webhook', async (req, res) => {
                     }
                 
                 // --- DIRECT CUSTOMER MESSAGE ---
+                // --- DIRECT CUSTOMER MESSAGE (LIVE CHAT OVERRIDE) ---
                 } else if (command.startsWith('/msg')) {
                     const parts = customerText.split(' '); 
                     if (parts.length >= 3) {
@@ -468,30 +505,77 @@ app.post('/webhook', async (req, res) => {
                         const customMessage = parts.slice(2).join(' '); 
 
                         if (targetPhone) {
+                            // 1. Activate Human Override for this user
+                            humanOverride.add(targetPhone);
+
+                            // 2. Send the message
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: {
-                                    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                    'Content-Type': 'application/json',
-                                },
-                                data: {
-                                    messaging_product: 'whatsapp',
-                                    to: targetPhone,
-                                    text: { body: `*Message from Manager:*\n${customMessage}` },
-                                },
+                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: `*Message from Manager:*\n${customMessage}` } },
                             });
-                            adminReply = `✅ Message successfully delivered to ${targetIdentifier}.`;
+                            adminReply = `✅ Message delivered. 🛑 AI is now PAUSED for ${targetIdentifier}. Any replies from them will be forwarded to you.`;
                         } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}. If the server restarted, try using their phone number instead (e.g., /msg 234708... your message).`;
+                            adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
                         }
                     } else {
                         adminReply = `❌ Invalid format. Please use: /msg SP-XXXX Your custom message here`;
                     }
+
+                // --- RESUME AI CONTROL ---
+                } else if (command.startsWith('/resume')) {
+                    const parts = command.split(' ');
+                    if (parts.length >= 2) {
+                        const targetIdentifier = parts[1].toUpperCase();
+                        let targetPhone = getPhoneByOrderCode(targetIdentifier);
+                        if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
+
+                        if (targetPhone) {
+                            humanOverride.delete(targetPhone); // Remove them from the override list
+                            adminReply = `✅ AI has resumed taking orders for ${targetIdentifier}. They are back on Auto.`;
+                        } else {
+                            adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
+                        }
+                    } else {
+                        adminReply = `❌ Invalid format. Please use: /resume SP-XXXX`;
+                    }
+                
+                // --- SYSTEM STATUS CHECK ---
+                } else if (command === '/status') {
+                    if (humanOverride.size === 0) {
+                        adminReply = "📊 SYSTEM STATUS: All customers are currently chatting with the AI. No active live chats.";
+                    } else {
+                        let liveChats = [];
+                        for (const phone of humanOverride) {
+                            const code = getOrderCode(phone) || phone;
+                            liveChats.push(`- ${code}`);
+                        }
+                        adminReply = `📊 ACTIVE LIVE CHATS (${humanOverride.size}):\nThe AI is currently PAUSED for the following orders:\n${liveChats.join('\n')}\n\nRemember to use /resume SP-XXXX when you are done!`;
+                    }
+
+                // --- SAAS BILLING CONTROLS (SUPER ADMIN ONLY) ---
+                } else if (command === '/shutdown') {
+                    if (customerPhone === SUPER_ADMIN) {
+                        isSubscriptionActive = false;
+                        adminReply = "🔴 SAAS KILL SWITCH ACTIVATED: The bot is now offline for all customers and admins.";
+                    } else {
+                        adminReply = "❌ Unauthorized. Only the system developer can use this command.";
+                    }
+                } else if (command === '/restart') {
+                    if (customerPhone === SUPER_ADMIN) {
+                        isSubscriptionActive = true;
+                        adminReply = "🟢 SAAS SYSTEM REACTIVATED: The bot is back online and accepting orders.";
+                    } else {
+                        adminReply = "❌ Unauthorized. Only the system developer can use this command.";
+                    }
+
+                // --- UNKNOWN COMMAND FALLBACK ---
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, or /deny SP-XXXX.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
                 }
 
+                // --- SEND THE ADMIN REPLY ---
                 await axios({
                     method: 'POST',
                     url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -510,7 +594,7 @@ app.post('/webhook', async (req, res) => {
             
             // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
-                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n\nThanks!";
+                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n WE close 9PM.\nThanks!";
                 if (pauseMessage !== "") excuseToGive = pauseMessage;
 
                 await axios({
@@ -529,7 +613,27 @@ app.post('/webhook', async (req, res) => {
                 return res.sendStatus(200); 
             }
             
-            pauseMessage = "";
+          // --- THE HUMAN HANDOFF INTERCEPTOR ---
+            if (humanOverride.has(customerPhone)) {
+                const uniqueCode = getOrderCode(customerPhone);
+                
+                // Forward the customer's reply directly to the Admins
+                for (const adminPhone of ADMIN_NUMBERS) {
+                    try {
+                        await axios({
+                            method: 'POST',
+                            url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                            headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                            data: { messaging_product: 'whatsapp', to: adminPhone, text: { body: `💬 LIVE CHAT (${uniqueCode}):\n"${customerText}"\n\nTo reply: /msg ${uniqueCode} your text\nTo end chat: /resume ${uniqueCode}` } },
+                        });
+                    } catch (err) { console.error("Failed to forward live chat."); }
+                }
+                return res.sendStatus(200); // 🛑 STOP HERE. Do not let the AI see this message!
+            }
+            
+            pauseMessage = ""; // Clear any pause messages
+            
+            // If human override is NOT active, let the AI take the wheel
             const aiReply = await askGemini(customerPhone, customerText);
 
             try {
