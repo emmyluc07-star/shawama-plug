@@ -9,7 +9,6 @@ const app = express();
 app.use(express.json());
 
 // --- GOOGLE SHEETS DATABASE SETUP ---
-// This automatically fixes the \n issue from Render!
 const serviceAccountAuth = new JWT({
     email: process.env.GOOGLE_CLIENT_EMAIL,
     key: process.env.GOOGLE_PRIVATE_KEY ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
@@ -20,22 +19,59 @@ const doc = new GoogleSpreadsheet(process.env.SPREADSHEET_ID, serviceAccountAuth
 async function saveOrderToDatabase(customerPhone, orderDetails, orderId) {
     try {
         await doc.loadInfo(); 
-        const sheet = doc.sheetsByIndex[0]; // Grabs the very first tab
+        const sheet = doc.sheetsByIndex[0]; 
         
-        // Get precise Nigerian time
         const now = new Date();
         const dateStr = now.toLocaleString("en-US", { timeZone: "Africa/Lagos" });
         
-        await sheet.addRow([
-            dateStr,          // A: Date
-            "+" + customerPhone, // B: Phone Number
-            orderDetails,     // C: Order Details
-            "Pending",        // D: Total Price (Leave pending for admin confirmation)
-            orderId           // E: Order ID
-        ]);
-        console.log(`✅ SUCCESS: Order ${orderId} saved to Google Sheets!`);
+        // This automatically creates Headers in Row 1 so our DB search works!
+        await sheet.setHeaderRow(['Date', 'Phone', 'Order', 'Status', 'OrderID']);
+
+        await sheet.addRow({
+            Date: dateStr,
+            Phone: "+" + customerPhone,
+            Order: orderDetails,
+            Status: "⏳ Pending Payment",
+            OrderID: orderId
+        });
+        console.log(`✅ SUCCESS: Order ${orderId} safely stored as Pending!`);
     } catch (error) {
         console.error("❌ DATABASE ERROR: Failed to save to Google Sheets:", error.message);
+    }
+}
+
+// --- NEW FUNCTION: The Persistent Memory Reader ---
+async function confirmOrderInDatabase(orderId) {
+    try {
+        await doc.loadInfo();
+        const sheet = doc.sheetsByIndex[0];
+        const rows = await sheet.getRows();
+
+        // Search the Google Sheet for the Order ID
+        const targetRow = rows.find(r => {
+            const id = r.OrderID || (typeof r.get === 'function' && r.get('OrderID'));
+            return id === orderId;
+        });
+
+        if (targetRow) {
+            // Change the status from Pending to Confirmed!
+            if (typeof targetRow.assign === 'function') {
+                targetRow.assign({ Status: '✅ CONFIRMED' });
+            } else if (typeof targetRow.set === 'function') {
+                targetRow.set('Status', '✅ CONFIRMED');
+            } else {
+                targetRow.Status = '✅ CONFIRMED';
+            }
+            await targetRow.save();
+
+            // Return the phone number from the DB so the bot can message them
+            const phone = targetRow.Phone || (typeof targetRow.get === 'function' && targetRow.get('Phone'));
+            return phone ? phone.replace('+', '') : null;
+        }
+        return null; // Order not found in sheet
+    } catch (error) {
+        console.error("❌ Update failed:", error.message);
+        return null;
     }
 }
 
@@ -115,22 +151,18 @@ Total: N6800
 [END_TICKET]
 
 * After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: 7087505608 OPAY Emmanuel abiola ajayi."
-* NEVER confirm payments yourself. After giving the OPAY details, you MUST say: "Upload your receipt screenshot here! Our human representative will confirm your order via (08133728255) and respond to you."
+* NEVER confirm payments yourself. After giving the OPAY details, you MUST say: "Upload your receipt screenshot right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
 
 STEP 6: POST-PAYMENT & ADD-ONS
-* If a customer texts you again AFTER they have already reached Step 5, politely ask: "Has our manager confirmed your transaction from 08133728255 yet?"
-* If they reply NO: Say, "Please give them just a moment! They are checking the kitchen for you."
-* If they reply YES, you may resume normal conversation.
-* If they reply YES and want to ADD to their order:
-  - DO NOT make them restart. Calculate the price of ONLY the newly requested items.
-  - Output a special ticket starting with [ADD_ON_ORDER] and ending with [END_TICKET].
-  Example:
-  [ADD_ON_ORDER]
-  Name: John (Add-on)
-  Added: 1x Extra Sausage
-  Extra to Pay: N350
-  [END_TICKET]
-  - Then ask them to transfer just the "Extra to Pay" amount.
+* If a customer texts you again AFTER they upload their receipt, check your chat history! 
+* IF NO CONFIRMATION YET: Politely stall: "Please give me just a moment! The manager is still verifying your receipt with the kitchen."
+* IF ALREADY CONFIRMED: Resume normal conversation.
+* IF THEY WANT TO ADD ITEMS AFTER PAYMENT (The Permission Gateway):
+  - Because their food might already be packed or dispatched, you MUST ask the manager for permission first!
+  - Output this exact tag: [ADD_ON_REQUEST]
+  - IF THEY CHOSE DELIVERY: Say, "Let me quickly check with the kitchen to see if your rider has left yet! 🏃‍♂️💨 Give me just a second."
+  - IF THEY CHOSE PICKUP: Say, "Let me quickly check with the kitchen to see if your order is already packed up! 🛍️ Give me just a second."
+  - STOP. Do not generate a ticket. Wait for the manager's system message.
 
 STEP 7: THE SMART ESCAPE HATCH (COMPLAINTS & HUMAN REQUESTS)
 * ONLY use this step if a customer has a serious complaint (e.g., dropped food, cold food, rider is late), wants a refund, OR explicitly demands to speak to a human/manager.
@@ -306,7 +338,7 @@ app.post('/webhook', async (req, res) => {
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
                     adminReply = "⏸️ ADMIN: Shop is PAUSED.";
                 
-                // --- NEW INVENTORY COMMANDS ---
+                // --- INVENTORY COMMANDS ---
                 } else if (command === '/out beef') {
                     isBeefAvailable = false;
                     adminReply = "🥩 ADMIN: Beef is OUT OF STOCK. The bot will now redirect people to Chicken.";
@@ -354,16 +386,21 @@ app.post('/webhook', async (req, res) => {
                         adminReply = `❌ Invalid format. Please use: /price SP-XXXX 500`;
                     }
                 
-                // --- ORDER CONFIRMATION INJECTION ---
+                // --- ORDER CONFIRMATION & DB UPDATE ---
                 } else if (command.startsWith('/confirm')) {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
                         const targetOrder = parts[1].toUpperCase();
-                        let targetPhone = getPhoneByOrderCode(targetOrder);
+
+                        // 1. UPDATE GOOGLE SHEETS (Our Persistent Memory)
+                        const dbPhone = await confirmOrderInDatabase(targetOrder);
+
+                        // 2. Fallback routing
+                        let targetPhone = dbPhone || getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
                         if (targetPhone) {
-                            const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If they chose Delivery, say 10-25 mins. Keep it very short, warm, and exciting!`;
+                            const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! The manager officially updated the database. Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If Delivery, say 10-25 mins. Keep it very short, warm, and nice.`;
                             const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
 
                             // Send the good news to the customer
@@ -380,34 +417,57 @@ app.post('/webhook', async (req, res) => {
                                     text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() },
                                 },
                             });
-                            adminReply = `✅ Done! I told the customer their order (${targetOrder}) is confirmed and being prepared.`;
+                            adminReply = `✅ Done! I marked ${targetOrder} as CONFIRMED in the Google Sheet and texted the customer.`;
                         } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetOrder}.`;
+                            adminReply = `❌ Error: Could not find ${targetOrder} in the Database or memory.`;
                         }
                     } else {
                         adminReply = `❌ Invalid format. Please use: /confirm SP-XXXX`;
                     }
+
+                // --- ADD-ON PERMISSIONS ---
+                } else if (command.startsWith('/allow') || command.startsWith('/deny')) {
+                    const parts = command.split(' ');
+                    if (parts.length >= 2) {
+                        const action = parts[0].substring(1); // Grabs 'allow' or 'deny'
+                        const targetOrder = parts[1].toUpperCase();
+                        let targetPhone = getPhoneByOrderCode(targetOrder);
+                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
+
+                        if (targetPhone) {
+                            let injectionPrompt = "";
+                            if (action === 'allow') {
+                                injectionPrompt = `[SYSTEM MESSAGE]: The manager APPROVED the add-on! The food is still in the kitchen. Tell the customer the news, calculate the extra price, and ask if they want you to add it to their ticket!`;
+                            } else {
+                                injectionPrompt = `[SYSTEM MESSAGE]: The manager DENIED the add-on because the food has already been dispatched or packed up. Apologize warmly to the customer and tell them we can't add to this specific order anymore.`;
+                            }
+                            
+                            const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
+
+                            await axios({
+                                method: 'POST',
+                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[ADD_ON_REQUEST]', '').trim() } },
+                            });
+                            adminReply = `✅ Done! I told the customer their add-on was ${action.toUpperCase()}ED.`;
+                        } else {
+                            adminReply = `❌ Error: Could not find an active chat for ${targetOrder}.`;
+                        }
+                    } else {
+                        adminReply = `❌ Invalid format. Please use: /allow SP-XXXX or /deny SP-XXXX`;
+                    }
                 
                 // --- DIRECT CUSTOMER MESSAGE ---
                 } else if (command.startsWith('/msg')) {
-                    // We use customerText here so we don't lose your capital letters and punctuation
                     const parts = customerText.split(' '); 
                     if (parts.length >= 3) {
                         const targetIdentifier = parts[1].toUpperCase();
-                        
-                        // Try to find the phone number using the SP- code first
                         let targetPhone = getPhoneByOrderCode(targetIdentifier);
-                        
-                        // --- THE BULLETPROOF FALLBACK ---
-                        if (!targetPhone && targetIdentifier.startsWith('234')) {
-                            targetPhone = targetIdentifier; 
-                        }
-                        
-                        // This grabs everything you typed AFTER the Order ID or Phone Number
+                        if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
                         const customMessage = parts.slice(2).join(' '); 
 
                         if (targetPhone) {
-                            // Send your exact text directly to the customer
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -429,7 +489,7 @@ app.post('/webhook', async (req, res) => {
                         adminReply = `❌ Invalid format. Please use: /msg SP-XXXX Your custom message here`;
                     }
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, or /msg SP-XXXX text.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, or /deny SP-XXXX.";
                 }
 
                 await axios({
@@ -450,7 +510,7 @@ app.post('/webhook', async (req, res) => {
             
             // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
-                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM tomorrow.\n\nThanks!";
+                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n\nThanks!";
                 if (pauseMessage !== "") excuseToGive = pauseMessage;
 
                 await axios({
@@ -483,15 +543,13 @@ app.post('/webhook', async (req, res) => {
                     data: {
                         messaging_product: 'whatsapp',
                         to: customerPhone,
-                        text: { body: aiReply.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').trim() },
+                        text: { body: aiReply.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').replace('[ADD_ON_REQUEST]', '').trim() },
                     },
                 });
 
                 // --- CEO TICKET ROUTER ---
-                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]')) {
+                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]') || aiReply.includes('[ADD_ON_REQUEST]')) {
                     const uniqueCode = getOrderCode(customerPhone);
-                    
-                    // Generate exact Nigerian Date & Time
                     const now = new Date();
                     const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
                     
@@ -507,8 +565,13 @@ app.post('/webhook', async (req, res) => {
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
                         alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
                         adminMessageContent = `Customer's Address:\n"${customerText}"`;
+
+                    // 3. Add-On Permission Route
+                    } else if (aiReply.includes('[ADD_ON_REQUEST]')) {
+                        alertType = `🚨 ADD-ON PERMISSION REQUEST 🚨\nCheck if food is still there! To approve, reply:\n/allow ${uniqueCode}\nTo reject, reply:\n/deny ${uniqueCode}`;
+                        adminMessageContent = `Customer wants to add:\n"${customerText}"`;
                     
-                    // 3. New Order Route
+                    // 4. New Order Route
                     } else {
                         let cleanAdminAlert = aiReply;
                         if (aiReply.includes('[END_TICKET]')) {
@@ -569,8 +632,6 @@ app.post('/webhook', async (req, res) => {
                 });
 
                 const uniqueCode = getOrderCode(customerPhone); 
-                
-                // Generate exact Nigerian Date & Time
                 const now = new Date();
                 const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
                 
@@ -592,7 +653,7 @@ app.post('/webhook', async (req, res) => {
                             },
                         });
 
-                        // Forward Text Details with Timestamp & `/confirm` prompt
+                        // Forward Text Details
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -603,7 +664,7 @@ app.post('/webhook', async (req, res) => {
                             data: {
                                 messaging_product: 'whatsapp',
                                 to: adminPhone, 
-                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order, reply to me with:\n/confirm ${uniqueCode}` },
+                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order and update the database, reply to me with:\n/confirm ${uniqueCode}` },
                             },
                         });
                     } catch (err) {
