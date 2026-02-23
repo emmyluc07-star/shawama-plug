@@ -102,6 +102,18 @@ Your job is to chat with customers, answer their questions, take orders, and fin
     3 piece chicken 🍗 and chips 🍟 | N6000
 ~ PREMIUM    
     4 piece chicken 🍗 and chips 🍟 | N7500
+    
+*FUN COCKTAIL (DRINKS & SMOOTHIES)*
+Categories & Flavors:
+- Milkshakes: Strawberry, Vanilla, Chocolate, Oreo, Alcoholic, Special
+- Smoothies: Banana & Apple, Ginger & Pineapple, Tigernut & Date, Alcoholic, Avocado
+- Cocktails: Tequila Sunrise, Mojito, Long Island, Love Affection, Rum Hurricane, Blue Margarita, Martini Fizz, Whiskey Sour
+
+Cup Sizes & Prices (Applies to ALL Fun Cocktail drinks):
+~ 25Cl: N2500
+~ 35Cl: N3500
+~ 40Cl: N4500
+~ 50Cl: N4500
 
 *DELIVERY ZONES*
 (A): Southgate (close by) - N800
@@ -127,9 +139,9 @@ STEP 1: GENERAL CUSTOMER CARE & CHATTING
 * When they are ready, seamlessly transition into taking their order.
 
 STEP 2: ORDER TAKING & UPSELLING
-* ALWAYS confirm if they want Beef or Chicken.
-* THE UPSELL: Ask if they want to add EXTRAS (Cheese, Cream, etc.). Remember: Extra Sausage is strictly for Breadwarma ONLY.
-* IF the customer says "No" to extras or another item, DO NOT cancel the order. Simply proceed to STEP 3.
+* ALWAYS confirm if they want Beef or Chicken for their food.
+* THE UPSELL: ALWAYS ask if they want to add a cold drink from Fun Cocktail (Milkshake, Smoothie, or Cocktail) to step down the food!
+* IF the customer says "No" to extras or drinks, DO NOT cancel the order. Simply proceed to STEP 3.
 
 STEP 3: PICKUP OR DELIVERY
 * Ask: "Will this be for Pickup or Delivery?"
@@ -154,12 +166,15 @@ Example:
 Name: John
 Type: Delivery (Zone A)
 Address: FUTA South Gate, checking point, 08012345678
-Order: 1x Jumbo Beef, 1x Extra Cheese
-Total: N6800
+Order: 1x Jumbo Beef, 1x 35Cl Strawberry Milkshake
+Total: N8300
 [END_TICKET]
 
-* After the [END_TICKET] tag, say: "Please make a transfer of the total amount to: 5875254742 \n\nMoniepoint \nShawarma Plug Crib.."
-* NEVER confirm payments yourself. After giving the BANK details, you MUST say: "Upload your receipt screenshot right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
+* CRITICAL PAYMENT ROUTING: After the [END_TICKET] tag, look at the items in the customer's ticket to give the correct bank details!
+* IF THEY ORDERED ONLY SHAWARMA/FOOD: Say, "Please make a transfer of the total amount to: 5875254742 \n\nMoniepoint \nShawarma Plug Crib."
+* IF THEY ORDERED ONLY FUN COCKTAIL DRINKS: Say, "Please make a transfer of the total amount to: [INSERT FUN COCKTAIL ACCOUNT NUMBER] \n\n[INSERT BANK NAME] \n[INSERT ACCOUNT NAME]"
+* IF THEY ORDERED BOTH FOOD AND DRINKS: Tell them they need to make TWO separate transfers. Give them the exact amount for the food with the Moniepoint account, and the exact amount for the drinks with the Fun Cocktail account.
+* NEVER confirm payments yourself. After giving the BANK details, you MUST say: "Upload your receipt screenshot(s) right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
 
 STEP 6: POST-PAYMENT & ADD-ONS
 * If a customer texts you again AFTER they upload their receipt, check your chat history! 
@@ -234,21 +249,7 @@ function getPhoneByOrderCode(searchCode) {
 let manualShopState = 'auto'; 
 let pauseMessage = ""; 
 // --- INVENTORY STATE ---
-let isBeefAvailable = true;
-let isChickenAvailable = true;
-
-function isShopOpen() {
-    if (manualShopState === 'open') return true;
-    if (manualShopState === 'closed') return false;
-
-    const now = new Date();
-    const nigeriaTime = new Date(now.toLocaleString("en-US", { timeZone: "Africa/Lagos" }));
-    const currentHour = nigeriaTime.getHours();
-
-    const openingHour = 16;
-    const closingHour = 21;
-
-    return currentHour >= openingHour && currentHour < closingHour;
+let outOfStockItems = []; // This empty array will hold anything you mark as out of stock
 }
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -264,13 +265,13 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
 
     // --- SECRET INVENTORY INJECTION ---
     let inventoryAlert = "";
-    if (!isBeefAvailable && isChickenAvailable) inventoryAlert = "[SYSTEM NOTE: We are completely OUT OF BEEF. Only Chicken is available. Apologize and offer Chicken if they ask for Beef.]\n\n";
-    if (isChickenAvailable === false && isBeefAvailable) inventoryAlert = "[SYSTEM NOTE: We are completely OUT OF CHICKEN. Only Beef is available. Apologize and offer Beef if they ask for Chicken.]\n\n";
-    if (!isBeefAvailable && !isChickenAvailable) inventoryAlert = "[SYSTEM NOTE: We are OUT OF BOTH Beef and Chicken. Tell the customer we are currently sold out of main proteins.]\n\n";
+    if (outOfStockItems.length > 0) {
+        inventoryAlert = `[SYSTEM NOTE: We are completely OUT OF STOCK of the following items today: ${outOfStockItems.join(', ')}. DO NOT offer them. If a customer asks for one, apologize warmly and suggest a different flavor or item.]\n\n`;
+    }
     
     // Combine the secret alert with what the customer actually typed
     let finalPrompt = inventoryAlert ? inventoryAlert + "Customer says: " + userQuestion : userQuestion;
-
+    
     try {
         const result = await chat.sendMessage(finalPrompt);
         return result.response.text();
@@ -374,19 +375,17 @@ app.post('/webhook', async (req, res) => {
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
                     adminReply = "⏸️ ADMIN: Shop is PAUSED.";
                 
-                // --- INVENTORY COMMANDS ---
-                } else if (command === '/out beef') {
-                    isBeefAvailable = false;
-                    adminReply = "🥩 ADMIN: Beef is OUT OF STOCK. The bot will now redirect people to Chicken.";
-                } else if (command === '/out chicken') {
-                    isChickenAvailable = false;
-                    adminReply = "🍗 ADMIN: Chicken is OUT OF STOCK. The bot will now redirect people to Beef.";
-                } else if (command === '/restock beef') {
-                    isBeefAvailable = true;
-                    adminReply = "🥩 ADMIN: Beef is RESTOCKED. The bot is selling it again.";
-                } else if (command === '/restock chicken') {
-                    isChickenAvailable = true;
-                    adminReply = "🍗 ADMIN: Chicken is RESTOCKED. The bot is selling it again.";
+               // --- DYNAMIC INVENTORY COMMANDS ---
+                } else if (command.startsWith('/out ')) {
+                    const item = command.substring(5).trim().toLowerCase(); // Grabs whatever you type after "/out "
+                    if (!outOfStockItems.includes(item)) {
+                        outOfStockItems.push(item);
+                    }
+                    adminReply = `🚫 ADMIN: '${item}' is now OUT OF STOCK. The AI will stop selling it.`;
+                } else if (command.startsWith('/restock ')) {
+                    const item = command.substring(9).trim().toLowerCase(); // Grabs whatever you type after "/restock "
+                    outOfStockItems = outOfStockItems.filter(i => i !== item); // Removes it from the list
+                    adminReply = `✅ ADMIN: '${item}' is now RESTOCKED. The AI will sell it again.`;
 
                 // --- PRICE INJECTION ---
                 } else if (command.startsWith('/price')) {
