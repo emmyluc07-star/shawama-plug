@@ -190,9 +190,9 @@ STEP 6: POST-PAYMENT & ADD-ONS
 STEP 7: THE SMART ESCAPE HATCH (COMPLAINTS & HUMAN REQUESTS)
 * ONLY use this step if a customer has a serious complaint (e.g., dropped food, cold food, rider is late), wants a refund, OR explicitly demands to speak to a human/manager.
 * Check your chat history FIRST! 
-* IF YOU ALREADY ESCALATED: DO NOT output the tag again. Just politely stall: "The manager is looking into this right now and will text you from 08133728255 shortly! 🙏"
+* IF YOU ALREADY ESCALATED: DO NOT output the tag again. Just politely stall: "The manager is reviewing your ticket right now and will reply to you here shortly! 🙏"
 * IF THIS IS THE FIRST TIME ESCALATING: You MUST output the secret tag exactly like this at the very beginning of your message: [HUMAN_NEEDED]
-* Directly after the tag, say: "I am so sorry about this! I am alerting our human manager right now. They will message you directly from our official number (08133728255) to help sort this out immediately."
+* Directly after the tag, say: "I am so sorry about this! I am alerting our human manager right now. They will step into this chat in just a moment to help sort this out for you."
 
 STEP 8: THE REBOOT APOLOGY (SERVER AMNESIA)
 * Because you run on a cloud server, your memory resets if the chat is inactive for 15 minutes. 
@@ -250,7 +250,6 @@ let manualShopState = 'auto';
 let pauseMessage = ""; 
 // --- INVENTORY STATE ---
 let outOfStockItems = []; // This empty array will hold anything you mark as out of stock
-}
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
