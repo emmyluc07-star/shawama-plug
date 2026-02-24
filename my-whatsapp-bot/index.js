@@ -251,6 +251,20 @@ let pauseMessage = "";
 // --- INVENTORY STATE ---
 let outOfStockItems = []; // This empty array will hold anything you mark as out of stock
 
+function isShopOpen() {
+    if (manualShopState === 'open') return true;
+    if (manualShopState === 'closed') return false;
+
+    const now = new Date();
+    const nigeriaTime = new Date(now.toLocaleString("en-US", { timeZone: "Africa/Lagos" }));
+    const currentHour = nigeriaTime.getHours();
+
+    const openingHour = 16; // 4:00 PM
+    const closingHour = 21; // 9:00 PM
+
+    return currentHour >= openingHour && currentHour < closingHour;
+}
+
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function askGemini(customerPhone, userQuestion, retries = 2) {
@@ -376,15 +390,27 @@ app.post('/webhook', async (req, res) => {
                 
                // --- DYNAMIC INVENTORY COMMANDS ---
                 } else if (command.startsWith('/out ')) {
-                    const item = command.substring(5).trim().toLowerCase(); // Grabs whatever you type after "/out "
-                    if (!outOfStockItems.includes(item)) {
-                        outOfStockItems.push(item);
-                    }
-                    adminReply = `🚫 ADMIN: '${item}' is now OUT OF STOCK. The AI will stop selling it.`;
+                    const itemsString = command.substring(5).trim().toLowerCase();
+                    const itemsArray = itemsString.split(',').map(item => item.trim());
+                    
+                    itemsArray.forEach(item => {
+                        if (!outOfStockItems.includes(item)) {
+                            outOfStockItems.push(item);
+                        }
+                    });
+                    adminReply = `🚫 ADMIN: '${itemsArray.join(', ')}' marked as OUT OF STOCK.`;
+                    
                 } else if (command.startsWith('/restock ')) {
-                    const item = command.substring(9).trim().toLowerCase(); // Grabs whatever you type after "/restock "
-                    outOfStockItems = outOfStockItems.filter(i => i !== item); // Removes it from the list
-                    adminReply = `✅ ADMIN: '${item}' is now RESTOCKED. The AI will sell it again.`;
+                    const itemsString = command.substring(9).trim().toLowerCase();
+                    
+                    if (itemsString === 'all') {
+                        outOfStockItems = []; 
+                        adminReply = `✅ ADMIN: ALL items have been RESTOCKED! The list is completely clear.`;
+                    } else {
+                        const itemsArray = itemsString.split(',').map(item => item.trim());
+                        outOfStockItems = outOfStockItems.filter(i => !itemsArray.includes(i));
+                        adminReply = `✅ ADMIN: '${itemsArray.join(', ')}' RESTOCKED and removed from the blocklist.`;
+                    }
 
                 // --- PRICE INJECTION ---
                 } else if (command.startsWith('/price')) {
@@ -402,15 +428,8 @@ app.post('/webhook', async (req, res) => {
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: {
-                                    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                    'Content-Type': 'application/json',
-                                },
-                                data: {
-                                    messaging_product: 'whatsapp',
-                                    to: targetPhone,
-                                    text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() },
-                                },
+                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() } },
                             });
                             adminReply = `✅ Done! I told the customer delivery is N${priceAmount} and resumed their chat.`;
                         } else {
@@ -425,11 +444,7 @@ app.post('/webhook', async (req, res) => {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
                         const targetOrder = parts[1].toUpperCase();
-
-                        // 1. UPDATE GOOGLE SHEETS (Our Persistent Memory)
                         const dbPhone = await confirmOrderInDatabase(targetOrder);
-
-                        // 2. Fallback routing
                         let targetPhone = dbPhone || getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
@@ -437,19 +452,11 @@ app.post('/webhook', async (req, res) => {
                             const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! The manager officially updated the database. Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If Delivery, say 10-25 mins. Keep it very short, warm, and nice.`;
                             const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
 
-                            // Send the good news to the customer
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: {
-                                    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                    'Content-Type': 'application/json',
-                                },
-                                data: {
-                                    messaging_product: 'whatsapp',
-                                    to: targetPhone,
-                                    text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() },
-                                },
+                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() } },
                             });
                             adminReply = `✅ Done! I marked ${targetOrder} as CONFIRMED in the Google Sheet and texted the customer.`;
                         } else {
@@ -463,7 +470,7 @@ app.post('/webhook', async (req, res) => {
                 } else if (command.startsWith('/allow') || command.startsWith('/deny')) {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
-                        const action = parts[0].substring(1); // Grabs 'allow' or 'deny'
+                        const action = parts[0].substring(1); 
                         const targetOrder = parts[1].toUpperCase();
                         let targetPhone = getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
@@ -474,7 +481,7 @@ app.post('/webhook', async (req, res) => {
                                 injectionPrompt = `[SYSTEM MESSAGE]: The manager APPROVED the add-on! The food is still in the kitchen. Tell the customer the news, calculate the extra price, and ask if they want you to add it to their ticket!`;
                             } else {
                                 injectionPrompt = `[SYSTEM MESSAGE]: The manager DENIED the add-on because the food has already been dispatched or packed up. Apologize warmly to the customer and tell them we can't add to this specific order anymore.`;
-                            }
+                            }                            
                             
                             const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
 
@@ -492,7 +499,6 @@ app.post('/webhook', async (req, res) => {
                         adminReply = `❌ Invalid format. Please use: /allow SP-XXXX or /deny SP-XXXX`;
                     }
                 
-                // --- DIRECT CUSTOMER MESSAGE ---
                 // --- DIRECT CUSTOMER MESSAGE (LIVE CHAT OVERRIDE) ---
                 } else if (command.startsWith('/msg')) {
                     const parts = customerText.split(' '); 
@@ -503,17 +509,21 @@ app.post('/webhook', async (req, res) => {
                         const customMessage = parts.slice(2).join(' '); 
 
                         if (targetPhone) {
-                            // 1. Activate Human Override for this user
+                            const isAlreadyPaused = humanOverride.has(targetPhone);
                             humanOverride.add(targetPhone);
 
-                            // 2. Send the message
                             await axios({
                                 method: 'POST',
                                 url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
                                 headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
                                 data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: `*Message from Manager:*\n${customMessage}` } },
                             });
-                            adminReply = `✅ Message delivered. 🛑 AI is now PAUSED for ${targetIdentifier}. Any replies from them will be forwarded to you.`;
+                            
+                            if (isAlreadyPaused) {
+                                adminReply = `✅ Message delivered.`; 
+                            } else {
+                                adminReply = `✅ Message delivered. 🛑 AI is now PAUSED for ${targetIdentifier}. Any replies from them will be forwarded to you.`; 
+                            }
                         } else {
                             adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
                         }
@@ -530,7 +540,7 @@ app.post('/webhook', async (req, res) => {
                         if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
 
                         if (targetPhone) {
-                            humanOverride.delete(targetPhone); // Remove them from the override list
+                            humanOverride.delete(targetPhone); 
                             adminReply = `✅ AI has resumed taking orders for ${targetIdentifier}. They are back on Auto.`;
                         } else {
                             adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
@@ -570,7 +580,7 @@ app.post('/webhook', async (req, res) => {
 
                 // --- UNKNOWN COMMAND FALLBACK ---
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out beef, /out chicken, /restock beef, /restock chicken, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out [item], /restock [item], /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
                 }
 
                 // --- SEND THE ADMIN REPLY ---
