@@ -177,10 +177,7 @@ Order: 1x Jumbo Beef, 1x 35Cl Strawberry Milkshake
 Total: N8300
 [END_TICKET]
 
-* CRITICAL PAYMENT ROUTING: After the [END_TICKET] tag, look at the items in the customer's ticket to give the correct bank details!
-* IF THEY ORDERED ONLY SHAWARMA/FOOD: Say, "Please make a transfer of the total amount to: 5875254742 \n\nMoniepoint \nShawarma Plug Crib."
-* IF THEY ORDERED ONLY FUN COCKTAIL DRINKS: Say, "Please make a transfer of the total amount to: [INSERT FUN COCKTAIL ACCOUNT NUMBER] \n\n[INSERT BANK NAME] \n[INSERT ACCOUNT NAME]"
-* IF THEY ORDERED BOTH FOOD AND DRINKS: Tell them they need to make TWO separate transfers. Give them the exact amount for the food with the Moniepoint account, and the exact amount for the drinks with the Fun Cocktail account.
+* CRITICAL PAYMENT ROUTING: After the [END_TICKET] tag, tell the customer to make a single transfer for the total amount to: 5875254742 \n\nMoniepoint \nShawarma Plug Crib.
 * NEVER confirm payments yourself. After giving the BANK details, you MUST say: "Upload your receipt screenshot(s) right here! I will send it to our manager and confirm your order for you the second it is verified. ⏳"
 
 STEP 6: POST-PAYMENT & ADD-ONS
@@ -227,6 +224,7 @@ const fallbackModel = genAI.getGenerativeModel({
 const activeConversations = new Map();
 const orderCodes = new Map(); 
 const humanOverride = new Set(); 
+const processedMessages = new Set(); // <-- META DUPLICATE BOUNCER MEMORY ADDED HERE
 
 // --- ADMIN BROADCAST LIST ---
 const ADMIN_NUMBERS = [
@@ -347,6 +345,13 @@ app.post('/webhook', async (req, res) => {
         const message = value?.messages?.[0];
 
         if (message?.type === 'text') {
+            // --- META DUPLICATE BLOCKER ADDED HERE ---
+            const messageId = message.id;
+            if (processedMessages.has(messageId)) return; 
+            processedMessages.add(messageId);
+            if (processedMessages.size > 1000) processedMessages.clear();
+            // -----------------------------------------
+
             const customerPhone = message.from;
             const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
@@ -703,6 +708,13 @@ app.post('/webhook', async (req, res) => {
             }
             
         } else if (message?.type === 'image') {
+            // --- META DUPLICATE BLOCKER FOR IMAGES ADDED HERE ---
+            const messageId = message.id;
+            if (processedMessages.has(messageId)) return; 
+            processedMessages.add(messageId);
+            if (processedMessages.size > 1000) processedMessages.clear();
+            // ----------------------------------------------------
+
             const customerPhone = message.from;
             const mediaId = message.image.id;
             const phoneId = value.metadata.phone_number_id;
