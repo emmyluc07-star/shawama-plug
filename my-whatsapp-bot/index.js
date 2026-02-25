@@ -70,34 +70,57 @@ async function confirmOrderInDatabase(orderId) {
     }
 }
 
+// --- DYNAMIC MENU STATE & FETCHER ---
+let liveMenuCache = "Menu is currently syncing...";
+
+async function syncMenuFromDatabase() {
+    try {
+        await doc.loadInfo(); 
+        const menuSheet = doc.sheetsByIndex[1]; // Grabs the 2nd tab (Sheet2)
+        if (!menuSheet) {
+            console.error("❌ MENU ERROR: Could not find Sheet2. Please create a 2nd tab for the menu.");
+            return;
+        }
+        
+        const rows = await menuSheet.getRows();
+        let menuBuilder = "*LIVE MENU KNOWLEDGE BASE*\n(Use these exact prices and items. DO NOT offer items that are not on this list. If a category is empty, it means we are out of stock of everything in it.)\n\n";
+        let menuCategories = {};
+
+        // Loop through the spreadsheet and group items by Category
+        rows.forEach(row => {
+            const category = row.get('Category');
+            const item = row.get('Item');
+            const price = row.get('Price');
+            const available = row.get('Available');
+
+            // Only add the item to the AI's memory if Available is TRUE
+            if (available && available.toString().toUpperCase() === 'TRUE') {
+                if (!menuCategories[category]) menuCategories[category] = [];
+                menuCategories[category].push(`~ ${item}: N${price}`);
+            }
+        });
+
+        // Format it beautifully for the AI
+        for (const [category, items] of Object.entries(menuCategories)) {
+            menuBuilder += `*${category}*\n${items.join('\n')}\n\n`;
+        }
+
+        liveMenuCache = menuBuilder;
+        console.log("✅ Live Menu Successfully Synced from Google Sheets!");
+    } catch (error) {
+        console.error("❌ Failed to sync menu:", error.message);
+    }
+}
+
+// Trigger a sync when the server first starts!
+syncMenuFromDatabase();
+
+
 // --- AI SETUP ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
 Your job is to chat with customers, answer their questions, take orders, and finalize details.
-
-*MENU KNOWLEDGE BASE*
-(Use these exact emojis and formatting when showing the menu to customers)
-
-*🌯 SHAWARMA & BREADWARMA*
-~ Solo (single sausage): Beef N3200 | Chicken N3700
-~ Mini (double sausage): Beef N4000 | Chicken N4500
-~ Jumbo (triple sausage): Beef N4800 | Chicken N5300
-~ Night Class: Beef N1600 | Chicken N2200
-~ Breadwarma JUST ME: Beef N2500 | Chicken N3000
-~ Breadwarma BIG BOY: Beef N3500 | Chicken N4000
-➕ Extras: Cheese N1500 | Beef N700 | Cream N600 | Sausage N350 (Breadwarma ONLY)
-
-*🍗 CHICKEN AND CHIPS*
-~ GOLDEN (3 piece wings): N3500
-~ BELLEFUL (3 piece + chips): N6000
-~ PREMIUM (4 piece + chips): N7500
-
-*🍹 COLD DRINKS (By Fun Cocktail)*
-~ Cup Sizes: 25Cl (N2500) | 35Cl (N3500) | 40Cl (N4500) | 50Cl (N4500)
-~ Milkshakes: Strawberry, Vanilla, Chocolate, Oreo, Alcoholic, Special
-~ Smoothies: Banana & Apple, Ginger & Pineapple, Tigernut & Date, Alcoholic, Avocado
-~ Cocktails: Tequila Sunrise, Mojito, Long Island, Love Affection, Rum Hurricane, Blue Margarita, Martini Fizz, Whiskey Sour
 
 *DELIVERY ZONES*
 (A): Southgate (close by) - N800
@@ -117,14 +140,14 @@ Your job is to chat with customers, answer their questions, take orders, and fin
 CRITICAL RULES & WORKFLOW:
 
 STEP 1: GENERAL CUSTOMER CARE & MENU PRESENTATION
-* Be warm, conversational, and helpful. 
+* You will receive the active menu attached to the user's message. IT IS LIVE DATA. Only offer items listed as available.
 * IF a customer simply asks "Menu" or "What do you have?": DO NOT show them everything at once. 
-* Say: "We have three delicious menus today! \n\n🌯 Shawarmas & Breadwarma \n🍗 Chicken & Chips \n🍹 Cold Drinks (Milkshakes, Smoothies & Cocktails by Fun Cocktail) \n\nWhich one would you like to see?"
+* Say: "We have some delicious options today! \n\n🌯 Shawarmas & Breadwarma \n🍗 Chicken & Chips \n🍹 Cold Drinks \n\nWhich one would you like to see?"
 * ONLY show the specific category they ask for. 
 
 STEP 2: ORDER TAKING & UPSELLING
 * ALWAYS confirm if they want Beef or Chicken for their food.
-* THE UPSELL: ALWAYS ask if they want to add a Milkshake, Smoothie, or Cocktail (powered by Fun Cocktail) to step down the food!
+* THE UPSELL: ALWAYS ask if they want to add a cold drink to step down the food!
 * IF the customer says "No" to extras or drinks, DO NOT cancel the order. Simply proceed to STEP 3.
 
 STEP 3: PICKUP OR DELIVERY
@@ -173,7 +196,7 @@ STEP 6: POST-PAYMENT & ADD-ONS
 
 STEP 7: THE SMART ESCAPE HATCH & CANCELLATIONS
 * ONLY use this step if a customer has a serious complaint (cold food, late rider), explicitly demands a human, OR wants to cancel their order.
-* IF CUSTOMER CANCELS: Acknowledge the cancellation warmly, say "No worries at all!", and completely forget about their cart and payment. Do NOT ask for a receipt.
+* IF CUSTOMER CANCELS: Acknowledge the cancellation warmly, say "No worries at all!", and completely forget about their cart. YOU MUST output this exact tag anywhere in your message: [CANCEL_ORDER]
 * FOR COMPLAINTS/ESCALATIONS: Check your chat history first! 
 * IF YOU ALREADY ESCALATED: DO NOT output the tag again. Just politely stall: "The manager is reviewing your ticket right now and will reply to you here shortly! 🙏"
 * IF THIS IS THE FIRST TIME ESCALATING: You MUST output the secret tag exactly like this at the very beginning of your message: [HUMAN_NEEDED]
@@ -232,8 +255,6 @@ function getPhoneByOrderCode(searchCode) {
 
 let manualShopState = 'auto'; 
 let pauseMessage = ""; 
-// --- INVENTORY STATE ---
-let outOfStockItems = []; 
 
 function isShopOpen() {
     if (manualShopState === 'open') return true;
@@ -260,12 +281,8 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
         activeConversations.set(customerPhone, chat);
     }
 
-    let inventoryAlert = "";
-    if (outOfStockItems.length > 0) {
-        inventoryAlert = `[SYSTEM NOTE: We are completely OUT OF STOCK of the following items today: ${outOfStockItems.join(', ')}. DO NOT offer them. If a customer asks for one, apologize warmly and suggest a different flavor or item.]\n\n`;
-    }
-    
-    let finalPrompt = inventoryAlert ? inventoryAlert + "Customer says: " + userQuestion : userQuestion;
+    // Injecting the dynamic Google Sheets menu directly into the prompt!
+    let finalPrompt = `[CURRENT MENU DATABASE]\n${liveMenuCache}\n\nCustomer says: ${userQuestion}`;
     
     try {
         const result = await chat.sendMessage(finalPrompt);
@@ -349,7 +366,7 @@ app.post('/webhook', async (req, res) => {
                     headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
                     data: { messaging_product: 'whatsapp', to: customerPhone, text: { body: suspendMessage } },
                 });
-                return; // Stop the code completely
+                return; 
             }
 
             // --- ADMIN CONTROLS ---
@@ -371,29 +388,11 @@ app.post('/webhook', async (req, res) => {
                     pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
                     adminReply = "⏸️ ADMIN: Shop is PAUSED.";
                 
-               // --- DYNAMIC INVENTORY COMMANDS ---
-                } else if (command.startsWith('/out ')) {
-                    const itemsString = command.substring(5).trim().toLowerCase();
-                    const itemsArray = itemsString.split(',').map(item => item.trim());
-                    
-                    itemsArray.forEach(item => {
-                        if (!outOfStockItems.includes(item)) {
-                            outOfStockItems.push(item);
-                        }
-                    });
-                    adminReply = `🚫 ADMIN: '${itemsArray.join(', ')}' marked as OUT OF STOCK.`;
-                    
-                } else if (command.startsWith('/restock ')) {
-                    const itemsString = command.substring(9).trim().toLowerCase();
-                    
-                    if (itemsString === 'all') {
-                        outOfStockItems = []; 
-                        adminReply = `✅ ADMIN: ALL items have been RESTOCKED! The list is completely clear.`;
-                    } else {
-                        const itemsArray = itemsString.split(',').map(item => item.trim());
-                        outOfStockItems = outOfStockItems.filter(i => !itemsArray.includes(i));
-                        adminReply = `✅ ADMIN: '${itemsArray.join(', ')}' RESTOCKED and removed from the blocklist.`;
-                    }
+                // --- MANUAL MENU SYNC ---
+                } else if (command === '/sync') {
+                    adminReply = "🔄 Syncing menu from Google Sheets... Give me a second!";
+                    await syncMenuFromDatabase();
+                    adminReply = "✅ SYNC COMPLETE! The bot now has the latest prices and stock availability.";
 
                 // --- PRICE INJECTION ---
                 } else if (command.startsWith('/price')) {
@@ -563,7 +562,7 @@ app.post('/webhook', async (req, res) => {
 
                 // --- UNKNOWN COMMAND FALLBACK ---
                 } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /out [item], /restock [item], /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
+                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /sync, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
                 }
 
                 // --- SEND THE ADMIN REPLY ---
@@ -604,11 +603,10 @@ app.post('/webhook', async (req, res) => {
                 return; 
             }
             
-          // --- THE HUMAN HANDOFF INTERCEPTOR ---
+            // --- THE HUMAN HANDOFF INTERCEPTOR ---
             if (humanOverride.has(customerPhone)) {
                 const uniqueCode = getOrderCode(customerPhone);
                 
-                // Forward the customer's reply directly to the Admins
                 for (const adminPhone of ADMIN_NUMBERS) {
                     try {
                         await axios({
@@ -619,12 +617,12 @@ app.post('/webhook', async (req, res) => {
                         });
                     } catch (err) { console.error("Failed to forward live chat."); }
                 }
-                return; // 🛑 STOP HERE. Do not let the AI see this message!
+                return; 
             }
             
-            pauseMessage = ""; // Clear any pause messages
+            pauseMessage = ""; 
             
-            // If human override is NOT active, let the AI take the wheel
+            // Let the AI take the wheel
             const aiReply = await askGemini(customerPhone, customerText);
 
             try {
@@ -638,12 +636,13 @@ app.post('/webhook', async (req, res) => {
                     data: {
                         messaging_product: 'whatsapp',
                         to: customerPhone,
-                        text: { body: aiReply.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').replace('[ADD_ON_REQUEST]', '').trim() },
+                        // Clean tags from customer view!
+                        text: { body: aiReply.replace(/\[CURRENT MENU DATABASE[\s\S]*?\]\n\n/g, '').replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').replace('[ADD_ON_REQUEST]', '').replace('[CANCEL_ORDER]', '').trim() },
                     },
                 });
 
                 // --- CEO TICKET ROUTER ---
-                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]') || aiReply.includes('[ADD_ON_REQUEST]')) {
+                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]') || aiReply.includes('[ADD_ON_REQUEST]') || aiReply.includes('[CANCEL_ORDER]')) {
                     const uniqueCode = getOrderCode(customerPhone);
                     const now = new Date();
                     const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
@@ -651,22 +650,22 @@ app.post('/webhook', async (req, res) => {
                     let alertType = "🚨 KITCHEN ALERT 🚨";
                     let adminMessageContent = "";
 
-                    // 1. Complaint Route
                     if (aiReply.includes('[HUMAN_NEEDED]')) {
                         alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨\nTap the number below to message them immediately!";
                         adminMessageContent = `Customer said:\n"${customerText}"`;
                     
-                    // 2. Zone E Price Request Route
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
                         alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
                         adminMessageContent = `Customer's Address:\n"${customerText}"`;
 
-                    // 3. Add-On Permission Route
                     } else if (aiReply.includes('[ADD_ON_REQUEST]')) {
                         alertType = `🚨 ADD-ON PERMISSION REQUEST 🚨\nCheck if food is still there! To approve, reply:\n/allow ${uniqueCode}\nTo reject, reply:\n/deny ${uniqueCode}`;
                         adminMessageContent = `Customer wants to add:\n"${customerText}"`;
                     
-                    // 4. New Order Route
+                    } else if (aiReply.includes('[CANCEL_ORDER]')) {
+                        alertType = `🚫 ORDER CANCELLED 🚫\nABORT! DO NOT COOK! The customer just cancelled this order.`;
+                        adminMessageContent = `Customer said:\n"${customerText}"`;
+
                     } else {
                         let cleanAdminAlert = aiReply;
                         if (aiReply.includes('[END_TICKET]')) {
@@ -674,13 +673,11 @@ app.post('/webhook', async (req, res) => {
                         }
                         adminMessageContent = cleanAdminAlert.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').trim();
 
-                        // --- SPREADSHEET SAVER ---
                         if (aiReply.includes('[NEW_ORDER]')) {
                             saveOrderToDatabase(customerPhone, adminMessageContent, uniqueCode);
                         }
                     }
 
-                    // Forward to all Admin numbers
                     for (const adminPhone of ADMIN_NUMBERS) {
                         try {
                             await axios({
@@ -705,7 +702,6 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to send text message.", error);
             }
             
-        // --- IMAGE/RECEIPT HANDLER ---
         } else if (message?.type === 'image') {
             const customerPhone = message.from;
             const mediaId = message.image.id;
@@ -732,7 +728,6 @@ app.post('/webhook', async (req, res) => {
                 
                 for (const adminPhone of ADMIN_NUMBERS) {
                     try {
-                        // Forward Image
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -748,7 +743,6 @@ app.post('/webhook', async (req, res) => {
                             },
                         });
 
-                        // Forward Text Details
                         await axios({
                             method: 'POST',
                             url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
@@ -770,7 +764,6 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to process image block.", error);
             }
 
-        // --- AUDIO HANDLER ---
         } else if (message?.type === 'audio') {
             const customerPhone = message.from;
             const phoneId = value.metadata.phone_number_id;
@@ -794,7 +787,6 @@ app.post('/webhook', async (req, res) => {
             }
         }
     } 
-    // Do NOT add res.sendStatus(200) here at the bottom anymore!
 });
 
 const PORT = process.env.PORT || 10000;
