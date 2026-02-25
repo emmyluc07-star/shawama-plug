@@ -24,7 +24,6 @@ async function saveOrderToDatabase(customerPhone, orderDetails, orderId) {
         const now = new Date();
         const dateStr = now.toLocaleString("en-US", { timeZone: "Africa/Lagos" });
         
-        // This automatically creates Headers in Row 1 so our DB search works!
         await sheet.setHeaderRow(['Date', 'Phone', 'Order', 'Status', 'OrderID']);
 
         await sheet.addRow({
@@ -40,21 +39,18 @@ async function saveOrderToDatabase(customerPhone, orderDetails, orderId) {
     }
 }
 
-// --- NEW FUNCTION: The Persistent Memory Reader ---
 async function confirmOrderInDatabase(orderId) {
     try {
         await doc.loadInfo();
         const sheet = doc.sheetsByIndex[0];
         const rows = await sheet.getRows();
 
-        // Search the Google Sheet for the Order ID
         const targetRow = rows.find(r => {
             const id = r.OrderID || (typeof r.get === 'function' && r.get('OrderID'));
             return id === orderId;
         });
 
         if (targetRow) {
-            // Change the status from Pending to Confirmed!
             if (typeof targetRow.assign === 'function') {
                 targetRow.assign({ Status: '✅ CONFIRMED' });
             } else if (typeof targetRow.set === 'function') {
@@ -64,11 +60,10 @@ async function confirmOrderInDatabase(orderId) {
             }
             await targetRow.save();
 
-            // Return the phone number from the DB so the bot can message them
             const phone = targetRow.Phone || (typeof targetRow.get === 'function' && targetRow.get('Phone'));
             return phone ? phone.replace('+', '') : null;
         }
-        return null; // Order not found in sheet
+        return null; 
     } catch (error) {
         console.error("❌ Update failed:", error.message);
         return null;
@@ -81,39 +76,28 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
 Your job is to chat with customers, answer their questions, take orders, and finalize details.
 
-*MENU*
-*SHAWARMA*
+*MENU KNOWLEDGE BASE*
+(Use these exact emojis and formatting when showing the menu to customers)
+
+*🌯 SHAWARMA & BREADWARMA*
 ~ Solo (single sausage): Beef N3200 | Chicken N3700
 ~ Mini (double sausage): Beef N4000 | Chicken N4500
 ~ Jumbo (triple sausage): Beef N4800 | Chicken N5300
 ~ Night Class: Beef N1600 | Chicken N2200
+~ Breadwarma JUST ME: Beef N2500 | Chicken N3000
+~ Breadwarma BIG BOY: Beef N3500 | Chicken N4000
+➕ Extras: Cheese N1500 | Beef N700 | Cream N600 | Sausage N350 (Breadwarma ONLY)
 
-*BREADWARMA*
-~ JUST ME: Beef N2500 | Chicken N3000
-~ BIG BOY: Beef N3500 | Chicken N4000
+*🍗 CHICKEN AND CHIPS*
+~ GOLDEN (3 piece wings): N3500
+~ BELLEFUL (3 piece + chips): N6000
+~ PREMIUM (4 piece + chips): N7500
 
-*EXTRAS*
-~ Cheese: N1500 | Beef: N700 | Cream: N600 | Sausage: N350 (Breadwarma ONLY)
-
-*CHICKEN AND CHIPS*
-~ GOLDEN
-    3 piece chicken wings 🍗 | N3500
-~ BELLEFUL 
-    3 piece chicken 🍗 and chips 🍟 | N6000
-~ PREMIUM    
-    4 piece chicken 🍗 and chips 🍟 | N7500
-    
-*FUN COCKTAIL (DRINKS & SMOOTHIES)*
-Categories & Flavors:
-- Milkshakes: Strawberry, Vanilla, Chocolate, Oreo, Alcoholic, Special
-- Smoothies: Banana & Apple, Ginger & Pineapple, Tigernut & Date, Alcoholic, Avocado
-- Cocktails: Tequila Sunrise, Mojito, Long Island, Love Affection, Rum Hurricane, Blue Margarita, Martini Fizz, Whiskey Sour
-
-Cup Sizes & Prices (Applies to ALL Fun Cocktail drinks):
-~ 25Cl: N2500
-~ 35Cl: N3500
-~ 40Cl: N4500
-~ 50Cl: N4500
+*🍹 COLD DRINKS (By Fun Cocktail)*
+~ Cup Sizes: 25Cl (N2500) | 35Cl (N3500) | 40Cl (N4500) | 50Cl (N4500)
+~ Milkshakes: Strawberry, Vanilla, Chocolate, Oreo, Alcoholic, Special
+~ Smoothies: Banana & Apple, Ginger & Pineapple, Tigernut & Date, Alcoholic, Avocado
+~ Cocktails: Tequila Sunrise, Mojito, Long Island, Love Affection, Rum Hurricane, Blue Margarita, Martini Fizz, Whiskey Sour
 
 *DELIVERY ZONES*
 (A): Southgate (close by) - N800
@@ -132,15 +116,15 @@ Cup Sizes & Prices (Applies to ALL Fun Cocktail drinks):
 
 CRITICAL RULES & WORKFLOW:
 
-STEP 1: GENERAL CUSTOMER CARE & CHATTING
+STEP 1: GENERAL CUSTOMER CARE & MENU PRESENTATION
 * Be warm, conversational, and helpful. 
-* If a customer asks general questions (e.g., "What is a Breadwarma?", "Where are you located?"), use the info provided to answer them naturally!
-* Do NOT instantly escalate to a human for simple questions or casual chatting. Handle it yourself!
-* When they are ready, seamlessly transition into taking their order.
+* IF a customer simply asks "Menu" or "What do you have?": DO NOT show them everything at once. 
+* Say: "We have three delicious menus today! \n\n🌯 Shawarmas & Breadwarma \n🍗 Chicken & Chips \n🍹 Cold Drinks (Milkshakes, Smoothies & Cocktails by Fun Cocktail) \n\nWhich one would you like to see?"
+* ONLY show the specific category they ask for. 
 
 STEP 2: ORDER TAKING & UPSELLING
 * ALWAYS confirm if they want Beef or Chicken for their food.
-* THE UPSELL: ALWAYS ask if they want to add a cold drink from Fun Cocktail (Milkshake, Smoothie, or Cocktail) to step down the food!
+* THE UPSELL: ALWAYS ask if they want to add a Milkshake, Smoothie, or Cocktail (powered by Fun Cocktail) to step down the food!
 * IF the customer says "No" to extras or drinks, DO NOT cancel the order. Simply proceed to STEP 3.
 
 STEP 3: PICKUP OR DELIVERY
@@ -187,9 +171,10 @@ STEP 6: POST-PAYMENT & ADD-ONS
   - IF THEY CHOSE PICKUP: Say, "Let me quickly check with the kitchen to see if your order is already packed up! 🛍️ Give me just a second."
   - STOP. Do not generate a ticket. Wait for the manager's system message.
 
-STEP 7: THE SMART ESCAPE HATCH (COMPLAINTS & HUMAN REQUESTS)
-* ONLY use this step if a customer has a serious complaint (e.g., dropped food, cold food, rider is late), wants a refund, OR explicitly demands to speak to a human/manager.
-* Check your chat history FIRST! 
+STEP 7: THE SMART ESCAPE HATCH & CANCELLATIONS
+* ONLY use this step if a customer has a serious complaint (cold food, late rider), explicitly demands a human, OR wants to cancel their order.
+* IF CUSTOMER CANCELS: Acknowledge the cancellation warmly, say "No worries at all!", and completely forget about their cart and payment. Do NOT ask for a receipt.
+* FOR COMPLAINTS/ESCALATIONS: Check your chat history first! 
 * IF YOU ALREADY ESCALATED: DO NOT output the tag again. Just politely stall: "The manager is reviewing your ticket right now and will reply to you here shortly! 🙏"
 * IF THIS IS THE FIRST TIME ESCALATING: You MUST output the secret tag exactly like this at the very beginning of your message: [HUMAN_NEEDED]
 * Directly after the tag, say: "I am so sorry about this! I am alerting our human manager right now. They will step into this chat in just a moment to help sort this out for you."
@@ -201,11 +186,10 @@ STEP 8: THE REBOOT APOLOGY (SERVER AMNESIA)
 * Say: "I am so sorry! My system had a quick network refresh and I lost my memory of your cart. 🥺 Could you please tell me your order one more time so I can rush it to the kitchen?"
   
 FORMATTING (CRITICAL):
-* STRICT RULE: DO NOT use asterisks (*) or markdown anywhere in your response. 
-* Keep formatting completely clean and plain for WhatsApp.
-* Use ALL CAPS for emphasis if needed, rather than bolding.
-* Never send long walls of text. Use double line breaks between paragraphs. Use dashes (-) for bullet points.
-* Try not to write long texts, keep them as short as you can. Replace long paragraphs with clean, dashed lists whenever you are explaining things to a customer.`;
+* You are allowed to use asterisks (*) ONLY to bold the category headers (e.g., *🌯 SHAWARMA*). 
+* Do NOT use any other markdown like # or **. 
+* When sending a menu category, use double line breaks so it is easy to read.
+* Never send long, exhausting paragraphs. Use short, punchy sentences.`;
 
 const primaryModel = genAI.getGenerativeModel({ 
     model: "gemini-2.5-flash-lite",
@@ -219,7 +203,7 @@ const fallbackModel = genAI.getGenerativeModel({
 
 const activeConversations = new Map();
 const orderCodes = new Map(); 
-const humanOverride = new Set(); // Stores phone numbers currently talking to a human
+const humanOverride = new Set(); 
 
 // --- ADMIN BROADCAST LIST ---
 const ADMIN_NUMBERS = [
@@ -229,7 +213,7 @@ const ADMIN_NUMBERS = [
 
 // --- SAAS SUBSCRIPTION STATE ---
 let isSubscriptionActive = true; 
-const SUPER_ADMIN = '2347087505608'; // YOUR phone number. Only you can control the Kill Switch.
+const SUPER_ADMIN = '2347087505608'; 
 
 function getOrderCode(customerPhone) {
     if (!orderCodes.has(customerPhone)) {
@@ -249,7 +233,7 @@ function getPhoneByOrderCode(searchCode) {
 let manualShopState = 'auto'; 
 let pauseMessage = ""; 
 // --- INVENTORY STATE ---
-let outOfStockItems = []; // This empty array will hold anything you mark as out of stock
+let outOfStockItems = []; 
 
 function isShopOpen() {
     if (manualShopState === 'open') return true;
@@ -276,13 +260,11 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
         activeConversations.set(customerPhone, chat);
     }
 
-    // --- SECRET INVENTORY INJECTION ---
     let inventoryAlert = "";
     if (outOfStockItems.length > 0) {
         inventoryAlert = `[SYSTEM NOTE: We are completely OUT OF STOCK of the following items today: ${outOfStockItems.join(', ')}. DO NOT offer them. If a customer asks for one, apologize warmly and suggest a different flavor or item.]\n\n`;
     }
     
-    // Combine the secret alert with what the customer actually typed
     let finalPrompt = inventoryAlert ? inventoryAlert + "Customer says: " + userQuestion : userQuestion;
     
     try {
@@ -338,6 +320,10 @@ app.post('/webhook', async (req, res) => {
     const body = req.body;
 
     if (body.object === 'whatsapp_business_account') {
+        
+        // --- 🛑 META TIMEOUT FIX: Instantly tell Meta we got the message to stop double-texting! ---
+        res.sendStatus(200);
+
         const entry = body.entry?.[0];
         const changes = entry?.changes?.[0];
         const value = changes?.value;
@@ -351,12 +337,9 @@ app.post('/webhook', async (req, res) => {
             // --- SAAS KILL SWITCH INTERCEPTOR ---
             if (!isSubscriptionActive && customerPhone !== SUPER_ADMIN) {
                 let suspendMessage = "";
-                
-                // If the FUTA CEO tries to use a command while suspended
                 if (ADMIN_NUMBERS.includes(customerPhone)) {
                     suspendMessage = "🚨 SYSTEM SUSPENDED 🚨\nYour AI Assistant subscription is overdue or disabled. Please contact your developer to reactivate the system.";
                 } else {
-                    // If a FUTA student tries to order while suspended
                     suspendMessage = "Our AI ordering system is currently offline for maintenance! 🛠️\n\nPlease call or WhatsApp 08133728255 to place your order directly with the kitchen.";
                 }
 
@@ -366,7 +349,7 @@ app.post('/webhook', async (req, res) => {
                     headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
                     data: { messaging_product: 'whatsapp', to: customerPhone, text: { body: suspendMessage } },
                 });
-                return res.sendStatus(200); // Stop the code completely
+                return; // Stop the code completely
             }
 
             // --- ADMIN CONTROLS ---
@@ -597,7 +580,7 @@ app.post('/webhook', async (req, res) => {
                         text: { body: adminReply },
                     },
                 });
-                return res.sendStatus(200); 
+                return; 
             }
             
             // --- CUSTOMER FLOW ---
@@ -618,7 +601,7 @@ app.post('/webhook', async (req, res) => {
                         text: { body: excuseToGive },
                     },
                 });
-                return res.sendStatus(200); 
+                return; 
             }
             
           // --- THE HUMAN HANDOFF INTERCEPTOR ---
@@ -636,7 +619,7 @@ app.post('/webhook', async (req, res) => {
                         });
                     } catch (err) { console.error("Failed to forward live chat."); }
                 }
-                return res.sendStatus(200); // 🛑 STOP HERE. Do not let the AI see this message!
+                return; // 🛑 STOP HERE. Do not let the AI see this message!
             }
             
             pauseMessage = ""; // Clear any pause messages
@@ -810,10 +793,8 @@ app.post('/webhook', async (req, res) => {
                 console.error("Failed to process audio message.");
             }
         }
-        res.sendStatus(200);
-    } else {
-        res.sendStatus(404);
-    }
+    } 
+    // Do NOT add res.sendStatus(200) here at the bottom anymore!
 });
 
 const PORT = process.env.PORT || 10000;
