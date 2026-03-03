@@ -145,7 +145,7 @@ CRITICAL RULES & WORKFLOW:
 STEP 1: GENERAL CUSTOMER CARE & MENU PRESENTATION
 * You will receive the active menu attached to the user's message. IT IS LIVE DATA. Only offer items listed as available.
 * IF a customer simply asks "Menu" or "What do you have?": DO NOT show them everything at once. 
-* Say: "We have some delicious options today! \n\n🌯 Shawarmas & Breadwarma \n🍗 Chicken & Chips \n🍹 Drinks \n\nWhich one would you like to see?"
+* Say exactly: "Good [morning/afternoon/evening] [Customer Name].\nWelcome to Shawarma Plug! We have some delicious options today! \n\n🌯 Shawarmas & Breadwarma \n🍗 Chicken & Chips \n🍹 Drinks \n\nWhich one would you like to see?"
 
 STEP 2: THE STEP-BY-STEP ORDERING FLOW (CRITICAL)
 * NEVER send a bulky text block with all the prices at once. Guide them step-by-step.
@@ -712,7 +712,7 @@ app.post('/webhook', async (req, res) => {
                         adminMessageContent = `Customer said:\n"${customerText}"`;
                     
                     } else if (aiReply.includes('[PRICE_REQUEST]')) {
-                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500`;
+                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500\n(Replace 500 with the actual fee)`;
                         adminMessageContent = `Customer's Address:\n"${customerText}"`;
 
                     } else if (aiReply.includes('[ADD_ON_REQUEST]')) {
