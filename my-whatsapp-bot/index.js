@@ -45,9 +45,13 @@ async function confirmOrderInDatabase(orderId) {
         const sheet = doc.sheetsByIndex[0];
         const rows = await sheet.getRows();
 
+        // FIX 4: Normalizing the ID from the database search
+        const cleanId = orderId.replace(/[-\s]/g, '').toUpperCase();
+
         const targetRow = rows.find(r => {
             const id = r.OrderID || (typeof r.get === 'function' && r.get('OrderID'));
-            return id === orderId;
+            const cleanRowId = (id || "").toString().replace(/[-\s]/g, '').toUpperCase();
+            return cleanRowId === cleanId;
         });
 
         if (targetRow) {
@@ -115,7 +119,6 @@ async function syncMenuFromDatabase() {
 // Trigger a sync when the server first starts!
 syncMenuFromDatabase();
 
-
 // --- AI SETUP ---
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -147,11 +150,12 @@ STEP 1: GENERAL CUSTOMER CARE & MENU PRESENTATION
 STEP 2: THE STEP-BY-STEP ORDERING FLOW (CRITICAL)
 * NEVER send a bulky text block with all the prices at once. Guide them step-by-step.
 * IF THEY CHOOSE SHAWARMA/BREADWARMA:
-  1. First, ask them what size they want: "Would you like the \n\n~ Solo (Single Sausage), \n~ Mini (Double Sausage), \n~ Jumbo (Triple Sausage), \nor Breadwarma?"
+  1. First, ask them what size they want: "Would you like the \n\n~ Solo (Single Sausage), \n~ Mini (Double Sausage), \n~ Jumbo (Triple Sausage), \n~ Breadwarma?"
   2. WAIT for them to reply.
   3. Once they choose a size, ask: "Awesome! Would you prefer Beef or Chicken?"
   4. WAIT for them to reply.
-  5. ONLY AFTER they have chosen the size AND the meat, check your LIVE MENU KNOWLEDGE BASE, tell them the exact price for that specific item, and ask if they want to add a cold drink!
+  5. ONLY AFTER they have chosen the size AND the meat, check your LIVE MENU KNOWLEDGE BASE, tell them the exact price for that specific item, and ask if they want to add a drink or extras!
+  6. Note: For extras(cheese, beef, cream and sausage) the sausage is not available for shawarma only for breadwarma.
 * IF THEY CHOOSE CHICKEN & CHIPS OR DRINKS: Use the same step-by-step logic. Ask for the size or type first, wait for a reply, and then give the specific price.
 
 STEP 3: PICKUP OR DELIVERY
@@ -248,9 +252,13 @@ function getOrderCode(customerPhone) {
     return orderCodes.get(customerPhone);
 }
 
+// FIX 4: Normalizing lookup code
 function getPhoneByOrderCode(searchCode) {
+    if (!searchCode) return null;
+    const cleanSearch = searchCode.replace(/[-\s]/g, '').toUpperCase();
     for (let [phone, code] of orderCodes.entries()) {
-        if (code === searchCode) return phone;
+        const cleanCode = code.replace(/[-\s]/g, '').toUpperCase();
+        if (cleanCode === cleanSearch) return phone;
     }
     return null;
 }
@@ -274,7 +282,8 @@ function isShopOpen() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function askGemini(customerPhone, userQuestion, retries = 2) {
+// FIX 2: Updated askGemini to accept the customer's Name
+async function askGemini(customerPhone, customerName, userQuestion, retries = 2) {
     let chat = activeConversations.get(customerPhone);
 
     if (!chat) {
@@ -282,9 +291,14 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
         chat.activeModel = 'primary'; 
         activeConversations.set(customerPhone, chat);
     }
+    // FIX: Force a rapid menu fetch if the server just woke up with amnesia
+    if (liveMenuCache === "Menu is currently syncing...") {
+        console.log("⏳ Server woke up! Forcing a rapid menu fetch before AI answers...");
+        await syncMenuFromDatabase();
+    }
 
-    // Injecting the dynamic Google Sheets menu directly into the prompt!
-    let finalPrompt = `[CURRENT MENU DATABASE]\n${liveMenuCache}\n\nCustomer says: ${userQuestion}`;
+    // Injecting the dynamic Google Sheets menu and the Customer's Name directly into the prompt!
+    let finalPrompt = `[CURRENT MENU DATABASE]\n${liveMenuCache}\n\n[Customer Name: ${customerName}]\nCustomer says: ${userQuestion}`;
     
     try {
         const result = await chat.sendMessage(finalPrompt);
@@ -296,7 +310,7 @@ async function askGemini(customerPhone, userQuestion, retries = 2) {
         if (retries > 0) {
             console.log(`⏳ Rate limit hit! Waiting 3 seconds... (${retries} retries left)`);
             await delay(3000); 
-            return await askGemini(customerPhone, userQuestion, retries - 1); 
+            return await askGemini(customerPhone, customerName, userQuestion, retries - 1); 
         }
 
         if (chat.activeModel === 'primary') {
@@ -348,17 +362,35 @@ app.post('/webhook', async (req, res) => {
         const value = changes?.value;
         const message = value?.messages?.[0];
 
-        if (message?.type === 'text') {
-            // --- META DUPLICATE BLOCKER ADDED HERE ---
+        if (message?.type === 'text' || message?.type === 'location') {
+            // --- META DUPLICATE BLOCKER ---
             const messageId = message.id;
             if (processedMessages.has(messageId)) return; 
             processedMessages.add(messageId);
             if (processedMessages.size > 1000) processedMessages.clear();
-            // -----------------------------------------
+
+            // FIX 1: STALE MESSAGE BLOCKER (Blocks Phantom Texts after server refresh)
+            const msgTimestamp = parseInt(message.timestamp, 10);
+            const currentTimestamp = Math.floor(Date.now() / 1000);
+            if (currentTimestamp - msgTimestamp > 300) { // 300 seconds = 5 minutes
+                console.log(`⏳ Ignored stale message from Meta retry. Difference: ${currentTimestamp - msgTimestamp}s`);
+                return;
+            }
 
             const customerPhone = message.from;
-            const customerText = message.text.body;
             const phoneId = value.metadata.phone_number_id; 
+
+            // FIX 2: FETCH CUSTOMER NAME
+            const contactProfile = value.contacts?.[0]?.profile?.name;
+            const customerName = contactProfile ? contactProfile : "Customer";
+
+            // FIX 3: SAFE TEXT EXTRACTION (Fixes [PRICE_REQUEST] crash with pins)
+            let customerText = "";
+            if (message.type === 'text') {
+                customerText = message.text.body;
+            } else if (message.type === 'location') {
+                customerText = "📍 [Sent a Location Pin for Address]";
+            }
 
             // --- SAAS KILL SWITCH INTERCEPTOR ---
             if (!isSubscriptionActive && customerPhone !== SUPER_ADMIN) {
@@ -407,14 +439,17 @@ app.post('/webhook', async (req, res) => {
                 } else if (command.startsWith('/price')) {
                     const parts = command.split(' ');
                     if (parts.length >= 3) {
-                        const targetOrder = parts[1].toUpperCase();
+                        // FIX 4: Normalize order ID
+                        const rawOrder = parts[1] || "";
+                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
+                        
                         const priceAmount = parts[2];
                         let targetPhone = getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
                         if (targetPhone) {
                             const injectionPrompt = `[SYSTEM MESSAGE]: The manager has confirmed the delivery fee for Zone E is N${priceAmount}. Tell the customer Delivery Confirmed, add it to their total, and ask if their order is complete to proceed to checkout!`;
-                            const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
+                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt); // Name passed as Customer for system messages
 
                             await axios({
                                 method: 'POST',
@@ -434,14 +469,17 @@ app.post('/webhook', async (req, res) => {
                 } else if (command.startsWith('/confirm')) {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
-                        const targetOrder = parts[1].toUpperCase();
+                        // FIX 4: Normalize order ID
+                        const rawOrder = parts[1] || "";
+                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
+
                         const dbPhone = await confirmOrderInDatabase(targetOrder);
                         let targetPhone = dbPhone || getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
                         if (targetPhone) {
                             const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! The manager officially updated the database. Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If Delivery, say 10-25 mins. Keep it very short, warm, and nice.`;
-                            const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
+                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt);
 
                             await axios({
                                 method: 'POST',
@@ -462,7 +500,10 @@ app.post('/webhook', async (req, res) => {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
                         const action = parts[0].substring(1); 
-                        const targetOrder = parts[1].toUpperCase();
+                        // FIX 4: Normalize order ID
+                        const rawOrder = parts[1] || "";
+                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
+                        
                         let targetPhone = getPhoneByOrderCode(targetOrder);
                         if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
 
@@ -474,7 +515,7 @@ app.post('/webhook', async (req, res) => {
                                 injectionPrompt = `[SYSTEM MESSAGE]: The manager DENIED the add-on because the food has already been dispatched or packed up. Apologize warmly to the customer and tell them we can't add to this specific order anymore.`;
                             }                            
                             
-                            const aiFollowUp = await askGemini(targetPhone, injectionPrompt);
+                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt);
 
                             await axios({
                                 method: 'POST',
@@ -494,7 +535,10 @@ app.post('/webhook', async (req, res) => {
                 } else if (command.startsWith('/msg')) {
                     const parts = customerText.split(' '); 
                     if (parts.length >= 3) {
-                        const targetIdentifier = parts[1].toUpperCase();
+                        // FIX 4: Normalize order ID
+                        const rawOrder = parts[1] || "";
+                        const targetIdentifier = rawOrder.replace(/[-\s]/g, '').toUpperCase();
+                        
                         let targetPhone = getPhoneByOrderCode(targetIdentifier);
                         if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
                         const customMessage = parts.slice(2).join(' '); 
@@ -526,7 +570,10 @@ app.post('/webhook', async (req, res) => {
                 } else if (command.startsWith('/resume')) {
                     const parts = command.split(' ');
                     if (parts.length >= 2) {
-                        const targetIdentifier = parts[1].toUpperCase();
+                        // FIX 4: Normalize order ID
+                        const rawOrder = parts[1] || "";
+                        const targetIdentifier = rawOrder.replace(/[-\s]/g, '').toUpperCase();
+
                         let targetPhone = getPhoneByOrderCode(targetIdentifier);
                         if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
 
@@ -632,7 +679,8 @@ app.post('/webhook', async (req, res) => {
             pauseMessage = ""; 
             
             // Let the AI take the wheel
-            const aiReply = await askGemini(customerPhone, customerText);
+            // FIX 2: Pass the Customer Name to the Gemini prompt
+            const aiReply = await askGemini(customerPhone, customerName, customerText);
 
             try {
                 await axios({
@@ -712,12 +760,19 @@ app.post('/webhook', async (req, res) => {
             }
             
         } else if (message?.type === 'image') {
-            // --- META DUPLICATE BLOCKER FOR IMAGES ADDED HERE ---
+            // --- META DUPLICATE BLOCKER FOR IMAGES ---
             const messageId = message.id;
             if (processedMessages.has(messageId)) return; 
             processedMessages.add(messageId);
             if (processedMessages.size > 1000) processedMessages.clear();
-            // ----------------------------------------------------
+
+            // FIX 1: STALE MESSAGE BLOCKER FOR IMAGES TOO
+            const msgTimestamp = parseInt(message.timestamp, 10);
+            const currentTimestamp = Math.floor(Date.now() / 1000);
+            if (currentTimestamp - msgTimestamp > 300) { 
+                console.log(`⏳ Ignored stale image message from Meta retry. Difference: ${currentTimestamp - msgTimestamp}s`);
+                return;
+            }
 
             const customerPhone = message.from;
             const mediaId = message.image.id;
