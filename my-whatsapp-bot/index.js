@@ -211,8 +211,14 @@ FORMATTING (CRITICAL):
 * When sending a menu category, use double line breaks so it is easy to read.
 * Never send long, exhausting paragraphs. Use short, punchy sentences.`;
 
-const primaryModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
-const fallbackModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash", systemInstruction: systemInstruction });
+// --- AI SETUP ---
+// 🧠 Brain 1: The Main Customer-Facing AI (Uses Key 1)
+const genAI_Primary = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_PRIMARY);
+const primaryModel = genAI_Primary.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
+
+// 🧠 Brain 2: The Customer Fallback AI (Uses Key 2 - Steps in if Key 1 crashes)
+const genAI_Fallback = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_FALLBACK);
+const fallbackModel = genAI_Fallback.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
 
 // --- NEW: THE ADMIN AI ASSISTANT MODEL ---
 const adminSystemInstruction = `You are the silent backend JSON AI Assistant for the Manager of Shawarma Plug.
@@ -239,10 +245,12 @@ Format any order ID (e.g., "sp1234", "Sp-123") perfectly as "SP-1234".
 
 You must output an array containing ALL actions requested.`;
 
-const adminModel = genAI.getGenerativeModel({ 
+// 🧠 Brain 3: The Dedicated Admin AI (Uses Key 3 - NEVER shares a limit with customers)
+const genAI_Admin = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_ADMIN);
+const adminModel = genAI_Admin.getGenerativeModel({ 
     model: "gemini-2.5-flash", 
     systemInstruction: adminSystemInstruction,
-    generationConfig: { responseMimeType: "application/json" } // FORCES STRICT JSON
+    generationConfig: { responseMimeType: "application/json" } 
 });
 
 const activeConversations = new Map();
