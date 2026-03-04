@@ -234,7 +234,7 @@ Format any order ID (e.g., "sp1234", "Sp-123") perfectly as "SP-1234".
 - Auto hours: { "action": "auto" }
 - Pause shop: { "action": "pause" }
 - Sync menu: { "action": "sync" }
-- Status: { "action": "status" }
+- Check status or ask if shop is open: { "action": "status" }
 - Unknown command: { "action": "error", "message": "I didn't understand that command." }
 
 You must output an array containing ALL actions requested.`;
@@ -524,11 +524,25 @@ app.post('/webhook', async (req, res) => {
                                 break;
 
                             case 'status':
-                                if (humanOverride.size === 0) ceoReplySummary.push("📊 All customers are chatting with the AI. No active live chats.");
-                                else {
-                                    let liveChats = Array.from(humanOverride).map(p => getOrderCode(p)).join('\n');
-                                    ceoReplySummary.push(`📊 ACTIVE LIVE CHATS (${humanOverride.size}):\n${liveChats}`);
+                                // 1. Figure out the Shop's State
+                                let shopStatusStr = "";
+                                if (manualShopState === 'auto') {
+                                    const currentHour = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Lagos" })).getHours();
+                                    const isActuallyOpen = currentHour >= 16 && currentHour < 21;
+                                    shopStatusStr = `⏱️ Mode: AUTO (Currently ${isActuallyOpen ? '*OPEN* 🟢' : '*CLOSED* 🔴'})`;
+                                } else if (manualShopState === 'open') {
+                                    shopStatusStr = `✅ Mode: Manually *OPEN*`;
+                                } else if (manualShopState === 'closed') {
+                                    shopStatusStr = pauseMessage !== "" ? `⏸️ Mode: *PAUSED*` : `🛑 Mode: Manually *CLOSED*`;
                                 }
+
+                                // 2. Figure out the AI/Live Chat State
+                                let chatStatusStr = humanOverride.size === 0 
+                                    ? "🤖 All customers are chatting with the AI." 
+                                    : `👨‍💻 ACTIVE LIVE CHATS (${humanOverride.size}):\n${Array.from(humanOverride).map(p => getOrderCode(p)).join(', ')}`;
+
+                                // 3. Combine them into a beautiful dashboard
+                                ceoReplySummary.push(`📊 *SYSTEM DASHBOARD*\n\n${shopStatusStr}\n\n${chatStatusStr}`);
                                 break;
 
                             case 'error':
