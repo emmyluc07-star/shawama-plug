@@ -45,7 +45,6 @@ async function confirmOrderInDatabase(orderId) {
         const sheet = doc.sheetsByIndex[0];
         const rows = await sheet.getRows();
 
-        // FIX 4: Normalizing the ID from the database search
         const cleanId = orderId.replace(/[-\s]/g, '').toUpperCase();
 
         const targetRow = rows.find(r => {
@@ -55,13 +54,10 @@ async function confirmOrderInDatabase(orderId) {
         });
 
         if (targetRow) {
-            if (typeof targetRow.assign === 'function') {
-                targetRow.assign({ Status: '✅ CONFIRMED' });
-            } else if (typeof targetRow.set === 'function') {
-                targetRow.set('Status', '✅ CONFIRMED');
-            } else {
-                targetRow.Status = '✅ CONFIRMED';
-            }
+            if (typeof targetRow.assign === 'function') targetRow.assign({ Status: '✅ CONFIRMED' });
+            else if (typeof targetRow.set === 'function') targetRow.set('Status', '✅ CONFIRMED');
+            else targetRow.Status = '✅ CONFIRMED';
+            
             await targetRow.save();
 
             const phone = targetRow.Phone || (typeof targetRow.get === 'function' && targetRow.get('Phone'));
@@ -80,7 +76,7 @@ let liveMenuCache = "Menu is currently syncing...";
 async function syncMenuFromDatabase() {
     try {
         await doc.loadInfo(); 
-        const menuSheet = doc.sheetsByIndex[1]; // Grabs the 2nd tab (Sheet2)
+        const menuSheet = doc.sheetsByIndex[1]; 
         if (!menuSheet) {
             console.error("❌ MENU ERROR: Could not find Sheet2. Please create a 2nd tab for the menu.");
             return;
@@ -90,21 +86,18 @@ async function syncMenuFromDatabase() {
         let menuBuilder = "*LIVE MENU KNOWLEDGE BASE*\n(Use these exact prices and items. DO NOT offer items that are not on this list. If a category is empty, it means we are out of stock of everything in it.)\n\n";
         let menuCategories = {};
 
-        // Loop through the spreadsheet and group items by Category
         rows.forEach(row => {
             const category = row.get('Category');
             const item = row.get('Item');
             const price = row.get('Price');
             const available = row.get('Available');
 
-            // Only add the item to the AI's memory if Available is TRUE
             if (available && available.toString().toUpperCase() === 'TRUE') {
                 if (!menuCategories[category]) menuCategories[category] = [];
                 menuCategories[category].push(`~ ${item}: N${price}`);
             }
         });
 
-        // Format it beautifully for the AI
         for (const [category, items] of Object.entries(menuCategories)) {
             menuBuilder += `*${category}*\n${items.join('\n')}\n\n`;
         }
@@ -116,7 +109,6 @@ async function syncMenuFromDatabase() {
     }
 }
 
-// Trigger a sync when the server first starts!
 syncMenuFromDatabase();
 
 // --- AI SETUP ---
@@ -219,28 +211,48 @@ FORMATTING (CRITICAL):
 * When sending a menu category, use double line breaks so it is easy to read.
 * Never send long, exhausting paragraphs. Use short, punchy sentences.`;
 
-const primaryModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash-lite",
-    systemInstruction: systemInstruction 
-});
+const primaryModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
+const fallbackModel = genAI.getGenerativeModel({ model: "gemini-2.5-flash", systemInstruction: systemInstruction });
 
-const fallbackModel = genAI.getGenerativeModel({ 
-    model: "gemini-2.5-flash",
-    systemInstruction: systemInstruction 
+// --- NEW: THE ADMIN AI ASSISTANT MODEL ---
+const adminSystemInstruction = `You are the silent backend JSON AI Assistant for the Manager of Shawarma Plug.
+Your ONLY job is to read the Manager's natural language requests and translate them into a strict, valid JSON array of action objects. 
+NEVER output conversational text. Output ONLY the raw JSON array.
+
+*NORMALIZATION RULES:*
+Format any order ID (e.g., "sp1234", "Sp-123") perfectly as "SP-1234".
+
+*ALLOWED ACTIONS:*
+- Confirm order: { "action": "confirm", "orderId": "SP-1234" }
+- Set delivery price: { "action": "price", "orderId": "SP-1234", "amount": 500 } (If they forget amount, action: "error", message: "Forgot price for SP-1234!")
+- Allow add-on: { "action": "allow", "orderId": "SP-1234" }
+- Deny add-on: { "action": "deny", "orderId": "SP-1234" }
+- Message customer directly: { "action": "msg", "targetIdentifier": "SP-1234", "text": "we don't have chicken" }
+- Resume AI control: { "action": "resume", "targetIdentifier": "SP-1234" }
+- Open shop: { "action": "open" }
+- Close shop: { "action": "close" }
+- Auto hours: { "action": "auto" }
+- Pause shop: { "action": "pause" }
+- Sync menu: { "action": "sync" }
+- Status: { "action": "status" }
+- Unknown command: { "action": "error", "message": "I didn't understand that command." }
+
+You must output an array containing ALL actions requested.`;
+
+const adminModel = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash", 
+    systemInstruction: adminSystemInstruction,
+    generationConfig: { responseMimeType: "application/json" } // FORCES STRICT JSON
 });
 
 const activeConversations = new Map();
 const orderCodes = new Map(); 
 const humanOverride = new Set(); 
-const processedMessages = new Set(); // <-- META DUPLICATE BOUNCER MEMORY ADDED HERE
+const processedMessages = new Set(); 
 
 // --- ADMIN BROADCAST LIST ---
-const ADMIN_NUMBERS = [
-    '2347087505608', // You
-    '2348133728255'  // Kitchen Manager
-];
+const ADMIN_NUMBERS = ['2347087505608', '2348133728255'];
 
-// --- SAAS SUBSCRIPTION STATE ---
 let isSubscriptionActive = true; 
 const SUPER_ADMIN = '2347087505608'; 
 
@@ -252,7 +264,6 @@ function getOrderCode(customerPhone) {
     return orderCodes.get(customerPhone);
 }
 
-// FIX 4: Normalizing lookup code
 function getPhoneByOrderCode(searchCode) {
     if (!searchCode) return null;
     const cleanSearch = searchCode.replace(/[-\s]/g, '').toUpperCase();
@@ -282,7 +293,6 @@ function isShopOpen() {
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// FIX 2: Updated askGemini to accept the customer's Name
 async function askGemini(customerPhone, customerName, userQuestion, retries = 2) {
     let chat = activeConversations.get(customerPhone);
 
@@ -291,19 +301,17 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
         chat.activeModel = 'primary'; 
         activeConversations.set(customerPhone, chat);
     }
-    // FIX: Force a rapid menu fetch if the server just woke up with amnesia
+    
     if (liveMenuCache === "Menu is currently syncing...") {
         console.log("⏳ Server woke up! Forcing a rapid menu fetch before AI answers...");
         await syncMenuFromDatabase();
     }
 
-    // Injecting the dynamic Google Sheets menu and the Customer's Name directly into the prompt!
     let finalPrompt = `[CURRENT MENU DATABASE]\n${liveMenuCache}\n\n[Customer Name: ${customerName}]\nCustomer says: ${userQuestion}`;
     
     try {
         const result = await chat.sendMessage(finalPrompt);
         return result.response.text();
-
     } catch (error) {
         console.warn(`⚠️ ${chat.activeModel.toUpperCase()} AI failed. Error:`, error.message);
 
@@ -315,7 +323,6 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
 
         if (chat.activeModel === 'primary') {
             console.log("🔄 Retries failed. Rerouting user to Fallback AI and transferring memory...");
-            
             let oldHistory = [];
             try { oldHistory = await chat.getHistory(); } catch (e) {}
 
@@ -337,6 +344,21 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
     }
 }
 
+// --- NEW: WHATSAPP SENDER HELPER FUNCTION ---
+// Consolidates all those bulky axios POST requests into one clean function
+async function sendWhatsApp(phoneId, to, body) {
+    try {
+        await axios({
+            method: 'POST',
+            url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+            headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+            data: { messaging_product: 'whatsapp', to: to, text: { body: body } }
+        });
+    } catch (err) {
+        console.error(`Failed to send WhatsApp message to ${to}:`, err.message);
+    }
+}
+
 app.get('/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -353,8 +375,6 @@ app.post('/webhook', async (req, res) => {
     const body = req.body;
 
     if (body.object === 'whatsapp_business_account') {
-        
-        // --- 🛑 META TIMEOUT FIX: Instantly tell Meta we got the message to stop double-texting! ---
         res.sendStatus(200);
 
         const entry = body.entry?.[0];
@@ -363,279 +383,171 @@ app.post('/webhook', async (req, res) => {
         const message = value?.messages?.[0];
 
         if (message?.type === 'text' || message?.type === 'location') {
-            // --- META DUPLICATE BLOCKER ---
             const messageId = message.id;
             if (processedMessages.has(messageId)) return; 
             processedMessages.add(messageId);
             if (processedMessages.size > 1000) processedMessages.clear();
 
-            // FIX 1: STALE MESSAGE BLOCKER (Blocks Phantom Texts after server refresh)
             const msgTimestamp = parseInt(message.timestamp, 10);
             const currentTimestamp = Math.floor(Date.now() / 1000);
-            if (currentTimestamp - msgTimestamp > 300) { // 300 seconds = 5 minutes
-                console.log(`⏳ Ignored stale message from Meta retry. Difference: ${currentTimestamp - msgTimestamp}s`);
+            if (currentTimestamp - msgTimestamp > 300) { 
+                console.log(`⏳ Ignored stale message from Meta retry.`);
                 return;
             }
 
             const customerPhone = message.from;
             const phoneId = value.metadata.phone_number_id; 
 
-            // FIX 2: FETCH CUSTOMER NAME
             const contactProfile = value.contacts?.[0]?.profile?.name;
             const customerName = contactProfile ? contactProfile : "Customer";
 
-            // FIX 3: SAFE TEXT EXTRACTION (Fixes [PRICE_REQUEST] crash with pins)
             let customerText = "";
-            if (message.type === 'text') {
-                customerText = message.text.body;
-            } else if (message.type === 'location') {
-                customerText = "📍 [Sent a Location Pin for Address]";
-            }
+            if (message.type === 'text') customerText = message.text.body;
+            else if (message.type === 'location') customerText = "📍 [Sent a Location Pin for Address]";
 
-            // --- SAAS KILL SWITCH INTERCEPTOR ---
             if (!isSubscriptionActive && customerPhone !== SUPER_ADMIN) {
-                let suspendMessage = "";
-                if (ADMIN_NUMBERS.includes(customerPhone)) {
-                    suspendMessage = "🚨 SYSTEM SUSPENDED 🚨\nYour AI Assistant subscription is overdue or disabled. Please contact your developer to reactivate the system.";
-                } else {
-                    suspendMessage = "Our AI ordering system is currently offline for maintenance! 🛠️\n\nPlease call or WhatsApp 08133728255 to place your order directly with the kitchen.";
-                }
-
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                    data: { messaging_product: 'whatsapp', to: customerPhone, text: { body: suspendMessage } },
-                });
+                let suspendMsg = ADMIN_NUMBERS.includes(customerPhone) 
+                    ? "🚨 SYSTEM SUSPENDED 🚨\nYour AI Assistant subscription is overdue." 
+                    : "Our AI ordering system is currently offline for maintenance! 🛠️\nPlease call 08133728255.";
+                await sendWhatsApp(phoneId, customerPhone, suspendMsg);
                 return; 
             }
 
-            // --- ADMIN CONTROLS ---
-            if (ADMIN_NUMBERS.includes(customerPhone) && customerText.startsWith('/')) {
-                const command = customerText.toLowerCase().trim();
-                let adminReply = "";
-
-                if (command === '/close') {
-                    manualShopState = 'closed';
-                    adminReply = "🛑 ADMIN: Shop is now manually CLOSED.";
-                } else if (command === '/open') {
-                    manualShopState = 'open';
-                    adminReply = "✅ ADMIN: Shop is now manually OPEN.";
-                } else if (command === '/auto') {
-                    manualShopState = 'auto';
-                    adminReply = "⏱️ ADMIN: Shop is back on AUTO mode.";
-                } else if (command === '/pause') {
-                    manualShopState = 'closed'; 
-                    pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
-                    adminReply = "⏸️ ADMIN: Shop is PAUSED.";
+            // --- NEW: NLP ADMIN COMMAND BLOCK ---
+            if (ADMIN_NUMBERS.includes(customerPhone)) {
                 
-                // --- MANUAL MENU SYNC ---
-                } else if (command === '/sync') {
-                    adminReply = "🔄 Syncing menu from Google Sheets... Give me a second!";
-                    await syncMenuFromDatabase();
-                    adminReply = "✅ SYNC COMPLETE! The bot now has the latest prices and stock availability.";
-
-                // --- PRICE INJECTION ---
-                } else if (command.startsWith('/price')) {
-                    const parts = command.split(' ');
-                    if (parts.length >= 3) {
-                        // FIX 4: Normalize order ID
-                        const rawOrder = parts[1] || "";
-                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
-                        
-                        const priceAmount = parts[2];
-                        let targetPhone = getPhoneByOrderCode(targetOrder);
-                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
-
-                        if (targetPhone) {
-                            const injectionPrompt = `[SYSTEM MESSAGE]: The manager has confirmed the delivery fee for Zone E is N${priceAmount}. Tell the customer Delivery Confirmed, add it to their total, and ask if their order is complete to proceed to checkout!`;
-                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt); // Name passed as Customer for system messages
-
-                            await axios({
-                                method: 'POST',
-                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() } },
-                            });
-                            adminReply = `✅ Done! I told the customer delivery is N${priceAmount} and resumed their chat.`;
-                        } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetOrder}.`;
-                        }
-                    } else {
-                        adminReply = `❌ Invalid format. Please use: /price SP-XXXX 500`;
-                    }
-                
-                // --- ORDER CONFIRMATION & DB UPDATE ---
-                } else if (command.startsWith('/confirm')) {
-                    const parts = command.split(' ');
-                    if (parts.length >= 2) {
-                        // FIX 4: Normalize order ID
-                        const rawOrder = parts[1] || "";
-                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
-
-                        const dbPhone = await confirmOrderInDatabase(targetOrder);
-                        let targetPhone = dbPhone || getPhoneByOrderCode(targetOrder);
-                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
-
-                        if (targetPhone) {
-                            const injectionPrompt = `[SYSTEM MESSAGE]: Payment confirmed for ${targetOrder}! The manager officially updated the database. Tell the customer their order is confirmed and the kitchen is on it. If they chose Pickup, say it will be ready in 5-10 mins. If Delivery, say 10-25 mins. Keep it very short, warm, and nice.`;
-                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt);
-
-                            await axios({
-                                method: 'POST',
-                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[PRICE_REQUEST]', '').trim() } },
-                            });
-                            adminReply = `✅ Done! I marked ${targetOrder} as CONFIRMED in the Google Sheet and texted the customer.`;
-                        } else {
-                            adminReply = `❌ Error: Could not find ${targetOrder} in the Database or memory.`;
-                        }
-                    } else {
-                        adminReply = `❌ Invalid format. Please use: /confirm SP-XXXX`;
-                    }
-
-                // --- ADD-ON PERMISSIONS ---
-                } else if (command.startsWith('/allow') || command.startsWith('/deny')) {
-                    const parts = command.split(' ');
-                    if (parts.length >= 2) {
-                        const action = parts[0].substring(1); 
-                        // FIX 4: Normalize order ID
-                        const rawOrder = parts[1] || "";
-                        const targetOrder = rawOrder.replace(/[-\s]/g, '').toUpperCase();
-                        
-                        let targetPhone = getPhoneByOrderCode(targetOrder);
-                        if (!targetPhone && targetOrder.startsWith('234')) targetPhone = targetOrder; 
-
-                        if (targetPhone) {
-                            let injectionPrompt = "";
-                            if (action === 'allow') {
-                                injectionPrompt = `[SYSTEM MESSAGE]: The manager APPROVED the add-on! The food is still in the kitchen. Tell the customer the news, calculate the extra price, and ask if they want you to add it to their ticket!`;
-                            } else {
-                                injectionPrompt = `[SYSTEM MESSAGE]: The manager DENIED the add-on because the food has already been dispatched or packed up. Apologize warmly to the customer and tell them we can't add to this specific order anymore.`;
-                            }                            
-                            
-                            const aiFollowUp = await askGemini(targetPhone, "Customer", injectionPrompt);
-
-                            await axios({
-                                method: 'POST',
-                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: aiFollowUp.replace('[ADD_ON_REQUEST]', '').trim() } },
-                            });
-                            adminReply = `✅ Done! I told the customer their add-on was ${action.toUpperCase()}ED.`;
-                        } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetOrder}.`;
-                        }
-                    } else {
-                        adminReply = `❌ Invalid format. Please use: /allow SP-XXXX or /deny SP-XXXX`;
-                    }
-                
-                // --- DIRECT CUSTOMER MESSAGE (LIVE CHAT OVERRIDE) ---
-                } else if (command.startsWith('/msg')) {
-                    const parts = customerText.split(' '); 
-                    if (parts.length >= 3) {
-                        // FIX 4: Normalize order ID
-                        const rawOrder = parts[1] || "";
-                        const targetIdentifier = rawOrder.replace(/[-\s]/g, '').toUpperCase();
-                        
-                        let targetPhone = getPhoneByOrderCode(targetIdentifier);
-                        if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
-                        const customMessage = parts.slice(2).join(' '); 
-
-                        if (targetPhone) {
-                            const isAlreadyPaused = humanOverride.has(targetPhone);
-                            humanOverride.add(targetPhone);
-
-                            await axios({
-                                method: 'POST',
-                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                                data: { messaging_product: 'whatsapp', to: targetPhone, text: { body: `*Message from Manager:*\n${customMessage}` } },
-                            });
-                            
-                            if (isAlreadyPaused) {
-                                adminReply = `✅ Message delivered.`; 
-                            } else {
-                                adminReply = `✅ Message delivered. 🛑 AI is now PAUSED for ${targetIdentifier}. Any replies from them will be forwarded to you.`; 
-                            }
-                        } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
-                        }
-                    } else {
-                        adminReply = `❌ Invalid format. Please use: /msg SP-XXXX Your custom message here`;
-                    }
-
-                // --- RESUME AI CONTROL ---
-                } else if (command.startsWith('/resume')) {
-                    const parts = command.split(' ');
-                    if (parts.length >= 2) {
-                        // FIX 4: Normalize order ID
-                        const rawOrder = parts[1] || "";
-                        const targetIdentifier = rawOrder.replace(/[-\s]/g, '').toUpperCase();
-
-                        let targetPhone = getPhoneByOrderCode(targetIdentifier);
-                        if (!targetPhone && targetIdentifier.startsWith('234')) targetPhone = targetIdentifier; 
-
-                        if (targetPhone) {
-                            humanOverride.delete(targetPhone); 
-                            adminReply = `✅ AI has resumed taking orders for ${targetIdentifier}. They are back on Auto.`;
-                        } else {
-                            adminReply = `❌ Error: Could not find an active chat for ${targetIdentifier}.`;
-                        }
-                    } else {
-                        adminReply = `❌ Invalid format. Please use: /resume SP-XXXX`;
-                    }
-                
-                // --- SYSTEM STATUS CHECK ---
-                } else if (command === '/status') {
-                    if (humanOverride.size === 0) {
-                        adminReply = "📊 SYSTEM STATUS: All customers are currently chatting with the AI. No active live chats.";
-                    } else {
-                        let liveChats = [];
-                        for (const phone of humanOverride) {
-                            const code = getOrderCode(phone) || phone;
-                            liveChats.push(`- ${code}`);
-                        }
-                        adminReply = `📊 ACTIVE LIVE CHATS (${humanOverride.size}):\nThe AI is currently PAUSED for the following orders:\n${liveChats.join('\n')}\n\nRemember to use /resume SP-XXXX when you are done!`;
-                    }
-
-                // --- SAAS BILLING CONTROLS (SUPER ADMIN ONLY) ---
-                } else if (command === '/shutdown') {
-                    if (customerPhone === SUPER_ADMIN) {
-                        isSubscriptionActive = false;
-                        adminReply = "🔴 SAAS KILL SWITCH ACTIVATED: The bot is now offline for all customers and admins.";
-                    } else {
-                        adminReply = "❌ Unauthorized. Only the system developer can use this command.";
-                    }
-                } else if (command === '/restart') {
-                    if (customerPhone === SUPER_ADMIN) {
-                        isSubscriptionActive = true;
-                        adminReply = "🟢 SAAS SYSTEM REACTIVATED: The bot is back online and accepting orders.";
-                    } else {
-                        adminReply = "❌ Unauthorized. Only the system developer can use this command.";
-                    }
-
-                // --- UNKNOWN COMMAND FALLBACK ---
-                } else {
-                    adminReply = "❌ Unknown command. Use /open, /close, /pause, /auto, /sync, /price SP-XXXX AMOUNT, /confirm SP-XXXX, /msg SP-XXXX text, /allow SP-XXXX, /deny SP-XXXX, /status, /resume SP-XXXX, /shutdown, or /restart.";
+                // Allow Super Admin to bypass AI for shutdown/restart directly (saves latency)
+                if (customerPhone === SUPER_ADMIN && customerText.toLowerCase() === 'shutdown') {
+                    isSubscriptionActive = false;
+                    await sendWhatsApp(phoneId, customerPhone, "🔴 SAAS KILL SWITCH ACTIVATED.");
+                    return;
+                } else if (customerPhone === SUPER_ADMIN && customerText.toLowerCase() === 'restart') {
+                    isSubscriptionActive = true;
+                    await sendWhatsApp(phoneId, customerPhone, "🟢 SAAS SYSTEM REACTIVATED.");
+                    return;
                 }
 
-                // --- SEND THE ADMIN REPLY ---
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        text: { body: adminReply },
-                    },
-                });
-                return; 
+                try {
+                    // Send CEO's text to the Admin AI for translation
+                    const adminResult = await adminModel.generateContent(`Manager request: ${customerText}`);
+                    const tasks = JSON.parse(adminResult.response.text());
+                    let ceoReplySummary = [];
+
+                    // Loop through the translated actions
+                    for (const task of tasks) {
+                        
+                        let targetPhone = getPhoneByOrderCode(task.orderId || task.targetIdentifier);
+                        if (!targetPhone && (task.orderId || task.targetIdentifier)?.startsWith('234')) {
+                            targetPhone = task.orderId || task.targetIdentifier;
+                        }
+
+                        switch (task.action) {
+                            case 'confirm':
+                                const dbPhone = await confirmOrderInDatabase(task.orderId);
+                                targetPhone = dbPhone || targetPhone;
+                                if (!targetPhone) {
+                                    ceoReplySummary.push(`❌ Error: Could not find ${task.orderId} in database.`);
+                                } else {
+                                    const aiFollowUp = await askGemini(targetPhone, "Customer", `[SYSTEM MESSAGE]: Payment confirmed for ${task.orderId}! The manager officially updated the database. Tell the customer their order is confirmed and the kitchen is on it. Keep it short, warm, and nice.`);
+                                    await sendWhatsApp(phoneId, targetPhone, aiFollowUp.replace('[PRICE_REQUEST]', '').trim());
+                                    ceoReplySummary.push(`✅ ${task.orderId} confirmed.`);
+                                }
+                                break;
+
+                            case 'price':
+                                if (!targetPhone) {
+                                    ceoReplySummary.push(`❌ Error: Could not find chat for ${task.orderId}.`);
+                                } else {
+                                    const aiFollowUp = await askGemini(targetPhone, "Customer", `[SYSTEM MESSAGE]: The manager confirmed the delivery fee for Zone E is N${task.amount}. Tell the customer Delivery Confirmed, add it to their total, and ask if their order is complete to proceed to checkout!`);
+                                    await sendWhatsApp(phoneId, targetPhone, aiFollowUp.replace('[PRICE_REQUEST]', '').trim());
+                                    ceoReplySummary.push(`✅ Delivery for ${task.orderId} set to N${task.amount}.`);
+                                }
+                                break;
+
+                            case 'allow':
+                            case 'deny':
+                                if (!targetPhone) {
+                                    ceoReplySummary.push(`❌ Error: Could not find chat for ${task.orderId}.`);
+                                } else {
+                                    let prompt = task.action === 'allow' 
+                                        ? `[SYSTEM MESSAGE]: The manager APPROVED the add-on! The food is still in the kitchen. Tell the customer the news, calculate the extra price, and ask if they want to proceed!`
+                                        : `[SYSTEM MESSAGE]: The manager DENIED the add-on because the food has already been dispatched. Apologize warmly to the customer and tell them we can't add to this specific order anymore.`;
+                                    const aiFollowUp = await askGemini(targetPhone, "Customer", prompt);
+                                    await sendWhatsApp(phoneId, targetPhone, aiFollowUp.replace('[ADD_ON_REQUEST]', '').trim());
+                                    ceoReplySummary.push(`✅ Add-on ${task.action.toUpperCase()}ED for ${task.orderId}.`);
+                                }
+                                break;
+
+                            case 'msg':
+                                if (!targetPhone) {
+                                    ceoReplySummary.push(`❌ Error: Could not find chat for ${task.targetIdentifier}.`);
+                                } else {
+                                    humanOverride.add(targetPhone);
+                                    await sendWhatsApp(phoneId, targetPhone, `*Message from Manager:*\n${task.text}`);
+                                    ceoReplySummary.push(`✅ Message sent. AI PAUSED for ${task.targetIdentifier}.`);
+                                }
+                                break;
+
+                            case 'resume':
+                                if (!targetPhone) {
+                                    ceoReplySummary.push(`❌ Error: Could not find chat for ${task.targetIdentifier}.`);
+                                } else {
+                                    humanOverride.delete(targetPhone);
+                                    ceoReplySummary.push(`✅ AI resumed for ${task.targetIdentifier}.`);
+                                }
+                                break;
+
+                            case 'open':
+                                manualShopState = 'open';
+                                ceoReplySummary.push("✅ Shop is now manually OPEN.");
+                                break;
+                            
+                            case 'close':
+                                manualShopState = 'closed';
+                                ceoReplySummary.push("🛑 Shop is now manually CLOSED.");
+                                break;
+
+                            case 'auto':
+                                manualShopState = 'auto';
+                                ceoReplySummary.push("⏱️ Shop is back on AUTO mode.");
+                                break;
+
+                            case 'pause':
+                                manualShopState = 'closed';
+                                pauseMessage = "We are running a little behind schedule today! ⏳\n\nPlease give us a few minutes and check back soon, or message our manager at 08133728255.";
+                                ceoReplySummary.push("⏸️ Shop is PAUSED.");
+                                break;
+
+                            case 'sync':
+                                await syncMenuFromDatabase();
+                                ceoReplySummary.push("✅ Menu synced from Sheets!");
+                                break;
+
+                            case 'status':
+                                if (humanOverride.size === 0) ceoReplySummary.push("📊 All customers are chatting with the AI. No active live chats.");
+                                else {
+                                    let liveChats = Array.from(humanOverride).map(p => getOrderCode(p)).join('\n');
+                                    ceoReplySummary.push(`📊 ACTIVE LIVE CHATS (${humanOverride.size}):\n${liveChats}`);
+                                }
+                                break;
+
+                            case 'error':
+                                ceoReplySummary.push(`⚠️ ${task.message}`);
+                                break;
+                        }
+                    }
+                    
+                    // Send final batch summary to Admin
+                    if (ceoReplySummary.length > 0) {
+                        await sendWhatsApp(phoneId, customerPhone, ceoReplySummary.join('\n\n'));
+                    }
+
+                } catch (error) {
+                    console.error("Admin AI parsing failed:", error.message);
+                    await sendWhatsApp(phoneId, customerPhone, "❌ I had trouble understanding that command. Could you rephrase it?");
+                }
+                
+                return; // STOP HERE! Admin never drops into the customer flow below.
             }
             
             // --- CUSTOMER FLOW ---
@@ -643,219 +555,92 @@ app.post('/webhook', async (req, res) => {
                 let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n WE close 9PM.\nThanks!";
                 if (pauseMessage !== "") excuseToGive = pauseMessage;
 
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        text: { body: excuseToGive },
-                    },
-                });
+                await sendWhatsApp(phoneId, customerPhone, excuseToGive);
                 return; 
             }
             
-            // --- THE HUMAN HANDOFF INTERCEPTOR ---
             if (humanOverride.has(customerPhone)) {
                 const uniqueCode = getOrderCode(customerPhone);
-                
                 for (const adminPhone of ADMIN_NUMBERS) {
-                    try {
-                        await axios({
-                            method: 'POST',
-                            url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                            headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                            data: { messaging_product: 'whatsapp', to: adminPhone, text: { body: `💬 LIVE CHAT (${uniqueCode}):\n"${customerText}"\n\nTo reply: /msg ${uniqueCode} your text\nTo end chat: /resume ${uniqueCode}` } },
-                        });
-                    } catch (err) { console.error("Failed to forward live chat."); }
+                    await sendWhatsApp(phoneId, adminPhone, `💬 LIVE CHAT (${uniqueCode}):\n"${customerText}"`);
                 }
                 return; 
             }
             
             pauseMessage = ""; 
             
-            // Let the AI take the wheel
-            // FIX 2: Pass the Customer Name to the Gemini prompt
             const aiReply = await askGemini(customerPhone, customerName, customerText);
+            const cleanReply = aiReply.replace(/\[CURRENT MENU DATABASE[\s\S]*?\]\n\n/g, '').replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').replace('[ADD_ON_REQUEST]', '').replace('[CANCEL_ORDER]', '').trim();
+            
+            await sendWhatsApp(phoneId, customerPhone, cleanReply);
 
-            try {
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        // Clean tags from customer view!
-                        text: { body: aiReply.replace(/\[CURRENT MENU DATABASE[\s\S]*?\]\n\n/g, '').replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').replace('[HUMAN_NEEDED]', '').replace('[END_TICKET]', '').replace('[PRICE_REQUEST]', '').replace('[ADD_ON_REQUEST]', '').replace('[CANCEL_ORDER]', '').trim() },
-                    },
-                });
+            if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]') || aiReply.includes('[ADD_ON_REQUEST]') || aiReply.includes('[CANCEL_ORDER]')) {
+                const uniqueCode = getOrderCode(customerPhone);
+                const now = new Date();
+                const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
+                
+                let alertType = "🚨 KITCHEN ALERT 🚨";
+                let adminMessageContent = "";
 
-                // --- CEO TICKET ROUTER ---
-                if (aiReply.includes('[NEW_ORDER]') || aiReply.includes('[ADD_ON_ORDER]') || aiReply.includes('[HUMAN_NEEDED]') || aiReply.includes('[PRICE_REQUEST]') || aiReply.includes('[ADD_ON_REQUEST]') || aiReply.includes('[CANCEL_ORDER]')) {
-                    const uniqueCode = getOrderCode(customerPhone);
-                    const now = new Date();
-                    const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
-                    
-                    let alertType = "🚨 KITCHEN ALERT 🚨";
-                    let adminMessageContent = "";
+                if (aiReply.includes('[HUMAN_NEEDED]')) {
+                    alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨";
+                    adminMessageContent = `Customer said:\n"${customerText}"`;
+                } else if (aiReply.includes('[PRICE_REQUEST]')) {
+                    alertType = `🚨 DELIVERY QUOTE NEEDED 🚨`;
+                    adminMessageContent = `Customer Address:\n"${customerText}"\n\nJust tell me: "Set delivery price for ${uniqueCode} to ___"`;
+                } else if (aiReply.includes('[ADD_ON_REQUEST]')) {
+                    alertType = `🚨 ADD-ON PERMISSION REQUEST 🚨`;
+                    adminMessageContent = `Wants to add:\n"${customerText}"\n\nJust tell me: "Allow add on for ${uniqueCode}" or "Deny ${uniqueCode}"`;
+                } else if (aiReply.includes('[CANCEL_ORDER]')) {
+                    alertType = `🚫 ORDER CANCELLED 🚫\nABORT! DO NOT COOK!`;
+                    adminMessageContent = `Customer said:\n"${customerText}"`;
+                } else {
+                    let cleanAdminAlert = aiReply;
+                    if (aiReply.includes('[END_TICKET]')) cleanAdminAlert = aiReply.split('[END_TICKET]')[0].trim();
+                    adminMessageContent = cleanAdminAlert.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').trim();
 
-                    if (aiReply.includes('[HUMAN_NEEDED]')) {
-                        alertType = "🚨 MANAGER ASSISTANCE NEEDED 🚨\nTap the number below to message them immediately!";
-                        adminMessageContent = `Customer said:\n"${customerText}"`;
-                    
-                    } else if (aiReply.includes('[PRICE_REQUEST]')) {
-                        alertType = `🚨 DELIVERY QUOTE NEEDED 🚨\nTo set the price, reply to me with exactly:\n/price ${uniqueCode} 500\n(Replace 500 with the actual fee)`;
-                        adminMessageContent = `Customer's Address:\n"${customerText}"`;
-
-                    } else if (aiReply.includes('[ADD_ON_REQUEST]')) {
-                        alertType = `🚨 ADD-ON PERMISSION REQUEST 🚨\nCheck if food is still there! To approve, reply:\n/allow ${uniqueCode}\nTo reject, reply:\n/deny ${uniqueCode}`;
-                        adminMessageContent = `Customer wants to add:\n"${customerText}"`;
-                    
-                    } else if (aiReply.includes('[CANCEL_ORDER]')) {
-                        alertType = `🚫 ORDER CANCELLED 🚫\nABORT! DO NOT COOK! The customer just cancelled this order.`;
-                        adminMessageContent = `Customer said:\n"${customerText}"`;
-
-                    } else {
-                        let cleanAdminAlert = aiReply;
-                        if (aiReply.includes('[END_TICKET]')) {
-                            cleanAdminAlert = aiReply.split('[END_TICKET]')[0].trim();
-                        }
-                        adminMessageContent = cleanAdminAlert.replace('[NEW_ORDER]', '').replace('[ADD_ON_ORDER]', '').trim();
-
-                        if (aiReply.includes('[NEW_ORDER]')) {
-                            saveOrderToDatabase(customerPhone, adminMessageContent, uniqueCode);
-                        }
-                    }
-
-                    for (const adminPhone of ADMIN_NUMBERS) {
-                        try {
-                            await axios({
-                                method: 'POST',
-                                url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                                headers: {
-                                    Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                    'Content-Type': 'application/json',
-                                },
-                                data: {
-                                    messaging_product: 'whatsapp',
-                                    to: adminPhone, 
-                                    text: { body: `${alertType}\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\n${adminMessageContent}` },
-                                },
-                            });
-                        } catch (err) {
-                            console.error(`Failed to send ticket to ${adminPhone}`);
-                        }
-                    }
+                    if (aiReply.includes('[NEW_ORDER]')) saveOrderToDatabase(customerPhone, adminMessageContent, uniqueCode);
                 }
-            } catch (error) {
-                console.error("Failed to send text message.", error);
+
+                for (const adminPhone of ADMIN_NUMBERS) {
+                    await sendWhatsApp(phoneId, adminPhone, `${alertType}\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom: +${customerPhone}\n\n${adminMessageContent}`);
+                }
             }
             
         } else if (message?.type === 'image') {
-            // --- META DUPLICATE BLOCKER FOR IMAGES ---
             const messageId = message.id;
             if (processedMessages.has(messageId)) return; 
             processedMessages.add(messageId);
             if (processedMessages.size > 1000) processedMessages.clear();
 
-            // FIX 1: STALE MESSAGE BLOCKER FOR IMAGES TOO
             const msgTimestamp = parseInt(message.timestamp, 10);
             const currentTimestamp = Math.floor(Date.now() / 1000);
-            if (currentTimestamp - msgTimestamp > 300) { 
-                console.log(`⏳ Ignored stale image message from Meta retry. Difference: ${currentTimestamp - msgTimestamp}s`);
-                return;
-            }
+            if (currentTimestamp - msgTimestamp > 300) return;
 
             const customerPhone = message.from;
             const mediaId = message.image.id;
             const phoneId = value.metadata.phone_number_id;
 
-            try {
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        text: { body: "Receipt received! 🧾 I am sending this to our human manager to verify right now. I will message you back the second your order is confirmed! ⏳" },
-                    },
-                });
+            await sendWhatsApp(phoneId, customerPhone, "Receipt received! 🧾 I am sending this to our human manager to verify right now. I will message you back the second your order is confirmed! ⏳");
 
-                const uniqueCode = getOrderCode(customerPhone); 
-                const now = new Date();
-                const timeString = now.toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
-                
-                for (const adminPhone of ADMIN_NUMBERS) {
-                    try {
-                        await axios({
-                            method: 'POST',
-                            url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                            headers: {
-                                Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                'Content-Type': 'application/json',
-                            },
-                            data: {
-                                messaging_product: 'whatsapp',
-                                to: adminPhone, 
-                                type: 'image',
-                                image: { id: mediaId },
-                            },
-                        });
-
-                        await axios({
-                            method: 'POST',
-                            url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                            headers: {
-                                Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                                'Content-Type': 'application/json',
-                            },
-                            data: {
-                                messaging_product: 'whatsapp',
-                                to: adminPhone, 
-                                text: { body: `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\nFrom Customer: +${customerPhone}\n\nTo approve this order and update the database, reply to me with:\n/confirm ${uniqueCode}` },
-                            },
-                        });
-                    } catch (err) {
-                        console.error(`Failed to send receipt to ${adminPhone}`);
-                    }
+            const uniqueCode = getOrderCode(customerPhone); 
+            const timeString = new Date().toLocaleString("en-US", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" });
+            
+            for (const adminPhone of ADMIN_NUMBERS) {
+                try {
+                    await axios({
+                        method: 'POST',
+                        url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
+                        headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                        data: { messaging_product: 'whatsapp', to: adminPhone, type: 'image', image: { id: mediaId } },
+                    });
+                    await sendWhatsApp(phoneId, adminPhone, `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\n\nJust tell me: "Confirm ${uniqueCode}"`);
+                } catch (err) {
+                    console.error(`Failed to send receipt to ${adminPhone}`);
                 }
-            } catch (error) {
-                console.error("Failed to process image block.", error);
             }
-
         } else if (message?.type === 'audio') {
-            const customerPhone = message.from;
-            const phoneId = value.metadata.phone_number_id;
-
-            try {
-                await axios({
-                    method: 'POST',
-                    url: `https://graph.facebook.com/v17.0/${phoneId}/messages`,
-                    headers: {
-                        Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
-                        'Content-Type': 'application/json',
-                    },
-                    data: {
-                        messaging_product: 'whatsapp',
-                        to: customerPhone,
-                        text: { body: "Hey! 🎧 I'm still learning how to listen to voice notes. Could you please type your order or question out for me? ✍️" },
-                    },
-                });
-            } catch (error) {
-                console.error("Failed to process audio message.");
-            }
+            await sendWhatsApp(value.metadata.phone_number_id, message.from, "Hey! 🎧 I'm still learning how to listen to voice notes. Could you please type your order or question out for me? ✍️");
         }
     } 
 });
