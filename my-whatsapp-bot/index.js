@@ -1,12 +1,20 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { GoogleSpreadsheet } = require('google-spreadsheet');
 const { JWT } = require('google-auth-library');
 
 const app = express();
 app.use(express.json());
+
+// --- WHITE-LABEL CONFIGURATION ENGINES ---
+const BUSINESS_NAME = process.env.BUSINESS_NAME || "Our Shop";
+const BUSINESS_PHONE = process.env.BUSINESS_PHONE || "our support line";
+const ORDER_PREFIX = process.env.ORDER_PREFIX || "ORD";
+const SUPER_ADMIN = process.env.SUPER_ADMIN_NUMBER;
+const ADMIN_NUMBERS = process.env.ADMIN_NUMBERS ? process.env.ADMIN_NUMBERS.split(',') : [];
 
 // --- GOOGLE SHEETS DATABASE SETUP ---
 const serviceAccountAuth = new JWT({
@@ -33,9 +41,9 @@ async function saveOrderToDatabase(customerPhone, orderDetails, orderId) {
             Status: "⏳ Pending Payment",
             OrderID: orderId
         });
-        console.log(`✅ SUCCESS: Order ${orderId} safely stored as Pending!`);
+        console.log(`✅ [Database] SUCCESS: Order ${orderId} safely stored!`);
     } catch (error) {
-        console.error("❌ DATABASE ERROR: Failed to save to Google Sheets:", error.message);
+        console.error("❌ [Database Error] Failed to save to Google Sheets:", error.message);
     }
 }
 
@@ -65,7 +73,7 @@ async function confirmOrderInDatabase(orderId) {
         }
         return null; 
     } catch (error) {
-        console.error("❌ Update failed:", error.message);
+        console.error("❌ [Database Error] Update failed:", error.message);
         return null;
     }
 }
@@ -78,7 +86,7 @@ async function syncMenuFromDatabase() {
         await doc.loadInfo(); 
         const menuSheet = doc.sheetsByIndex[1]; 
         if (!menuSheet) {
-            console.error("❌ MENU ERROR: Could not find Sheet2. Please create a 2nd tab for the menu.");
+            console.error("❌ [Menu Error] Could not find Sheet2. Please create a 2nd tab for the menu.");
             return;
         }
         
@@ -103,17 +111,17 @@ async function syncMenuFromDatabase() {
         }
 
         liveMenuCache = menuBuilder;
-        console.log("✅ Live Menu Successfully Synced from Google Sheets!");
+        console.log(`✅ [Menu] Live Menu Synced for ${BUSINESS_NAME}!`);
     } catch (error) {
-        console.error("❌ Failed to sync menu:", error.message);
+        console.error("❌ [Menu Error] Failed to sync menu:", error.message);
     }
 }
 
 syncMenuFromDatabase();
 
-// --- AI SETUP ---
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// --- AI SETUP (THE 3-KEY FORTRESS) ---
 
+// Assuming you still have your system prompt directly in the file for Tier 1
 const systemInstruction = `You are the friendly customer service AI for Shawarma Plug. 
 Your job is to chat with customers, answer their questions, take orders, and finalize details.
 
@@ -211,7 +219,6 @@ FORMATTING (CRITICAL):
 * When sending a menu category, use double line breaks so it is easy to read.
 * Never send long, exhausting paragraphs. Use short, punchy sentences.`;
 
-// --- AI SETUP ---
 // 🧠 Brain 1: The Main Customer-Facing AI (Uses Key 1)
 const genAI_Primary = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_PRIMARY);
 const primaryModel = genAI_Primary.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
@@ -220,21 +227,20 @@ const primaryModel = genAI_Primary.getGenerativeModel({ model: "gemini-2.5-flash
 const genAI_Fallback = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_FALLBACK);
 const fallbackModel = genAI_Fallback.getGenerativeModel({ model: "gemini-2.5-flash-lite", systemInstruction: systemInstruction });
 
-// --- NEW: THE ADMIN AI ASSISTANT MODEL ---
-const adminSystemInstruction = `You are the silent backend JSON AI Assistant for the Manager of Shawarma Plug.
+const adminSystemInstruction = `You are the silent backend JSON AI Assistant for the Manager of ${BUSINESS_NAME}.
 Your ONLY job is to read the Manager's natural language requests and translate them into a strict, valid JSON array of action objects. 
 NEVER output conversational text. Output ONLY the raw JSON array.
 
 *NORMALIZATION RULES:*
-Format any order ID (e.g., "sp1234", "Sp-123") perfectly as "SP-1234".
+Format any order ID perfectly using the business prefix: "${ORDER_PREFIX}-1234".
 
 *ALLOWED ACTIONS:*
-- Confirm order: { "action": "confirm", "orderId": "SP-1234" }
-- Set delivery price: { "action": "price", "orderId": "SP-1234", "amount": 500 } (If they forget amount, action: "error", message: "Forgot price for SP-1234!")
-- Allow add-on: { "action": "allow", "orderId": "SP-1234" }
-- Deny add-on: { "action": "deny", "orderId": "SP-1234" }
-- Message customer directly: { "action": "msg", "targetIdentifier": "SP-1234", "text": "we don't have chicken" }
-- Resume AI control: { "action": "resume", "targetIdentifier": "SP-1234" }
+- Confirm order: { "action": "confirm", "orderId": "${ORDER_PREFIX}-1234" }
+- Set delivery price: { "action": "price", "orderId": "${ORDER_PREFIX}-1234", "amount": 500 }
+- Allow add-on: { "action": "allow", "orderId": "${ORDER_PREFIX}-1234" }
+- Deny add-on: { "action": "deny", "orderId": "${ORDER_PREFIX}-1234" }
+- Message customer directly: { "action": "msg", "targetIdentifier": "${ORDER_PREFIX}-1234", "text": "we are out of stock" }
+- Resume AI control: { "action": "resume", "targetIdentifier": "${ORDER_PREFIX}-1234" }
 - Open shop: { "action": "open" }
 - Close shop: { "action": "close" }
 - Auto hours: { "action": "auto" }
@@ -253,20 +259,16 @@ const adminModel = genAI_Admin.getGenerativeModel({
     generationConfig: { responseMimeType: "application/json" } 
 });
 
-const activeConversations = new Map();
+const activeConversations = new Map(); // Standard Tier RAM Memory
 const orderCodes = new Map(); 
 const humanOverride = new Set(); 
 const processedMessages = new Set(); 
 
-// --- ADMIN BROADCAST LIST ---
-const ADMIN_NUMBERS = ['2347087505608', '2348133728255'];
-
 let isSubscriptionActive = true; 
-const SUPER_ADMIN = '2347087505608'; 
 
 function getOrderCode(customerPhone) {
     if (!orderCodes.has(customerPhone)) {
-        const newCode = "SP-" + Math.floor(1000 + Math.random() * 9000);
+        const newCode = ORDER_PREFIX + "-" + Math.floor(1000 + Math.random() * 9000);
         orderCodes.set(customerPhone, newCode);
     }
     return orderCodes.get(customerPhone);
@@ -311,7 +313,7 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
     }
     
     if (liveMenuCache === "Menu is currently syncing...") {
-        console.log("⏳ Server woke up! Forcing a rapid menu fetch before AI answers...");
+        console.log("⏳ [System] Forcing a rapid menu fetch before AI answers...");
         await syncMenuFromDatabase();
     }
 
@@ -321,16 +323,17 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
         const result = await chat.sendMessage(finalPrompt);
         return result.response.text();
     } catch (error) {
-        console.warn(`⚠️ ${chat.activeModel.toUpperCase()} AI failed. Error:`, error.message);
+        // 🤫 QUIET LOGS: Hide Google's massive error paragraph
+        console.warn(`⚠️ [AI Error] ${chat.activeModel.toUpperCase()} AI hit a snag for +${customerPhone}.`);
 
         if (retries > 0) {
-            console.log(`⏳ Rate limit hit! Waiting 3 seconds... (${retries} retries left)`);
+            console.log(`⏳ [AI Retry] Waiting 3 seconds... (${retries} retries left)`);
             await delay(3000); 
             return await askGemini(customerPhone, customerName, userQuestion, retries - 1); 
         }
 
         if (chat.activeModel === 'primary') {
-            console.log("🔄 Retries failed. Rerouting user to Fallback AI and transferring memory...");
+            console.log(`🔄 [AI Fallback] Rerouting +${customerPhone} to Fallback AI...`);
             let oldHistory = [];
             try { oldHistory = await chat.getHistory(); } catch (e) {}
 
@@ -340,20 +343,21 @@ async function askGemini(customerPhone, customerName, userQuestion, retries = 2)
 
             try {
                 const result = await chat.sendMessage(finalPrompt);
-                return result.response.text();
+                const aiFallbackResponse = result.response.text();
+                console.log(`✅ [AI Fallback] Successfully answered +${customerPhone}.`);
+                return aiFallbackResponse;
             } catch (fallbackError) {
-                console.error("🚨 FALLBACK AI INSTANT CRASH:", fallbackError.message);
-                return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your message in about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
+                console.error(`🚨 [AI FATAL] Fallback crashed for +${customerPhone}.`);
+                return `Sorry, our system is busy! Please message or call ${BUSINESS_PHONE} to place your order.`;
             }
         } else {
-            console.error("🚨 TOTAL AI CRASH: Both models failed.");
-            return "Sorry, our system is experiencing heavy traffic! \n\nPlease resend your message in about a minute or two \n\n*OR* 🤙 call or message 08133728255 to place your order.";
+            console.error(`🚨 [AI FATAL] Total AI crash for +${customerPhone}.`);
+            return `Sorry, our system is busy! Please message or call ${BUSINESS_PHONE} to place your order.`;
         }
     }
 }
 
-// --- NEW: WHATSAPP SENDER HELPER FUNCTION ---
-// Consolidates all those bulky axios POST requests into one clean function
+// --- WHATSAPP SENDER HELPER FUNCTION ---
 async function sendWhatsApp(phoneId, to, body) {
     try {
         await axios({
@@ -362,21 +366,15 @@ async function sendWhatsApp(phoneId, to, body) {
             headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
             data: { messaging_product: 'whatsapp', to: to, text: { body: body } }
         });
+        console.log(`📤 [WhatsApp] Sent message to +${to}`);
     } catch (err) {
-        console.error(`Failed to send WhatsApp message to ${to}:`, err.message);
+        console.error(`❌ [WhatsApp Error] Failed to send to +${to}:`, err.response ? JSON.stringify(err.response.data) : err.message);
     }
 }
 
 app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-
-    if (mode && token === process.env.VERIFY_TOKEN) {
-        res.status(200).send(challenge);
-    } else {
-        res.sendStatus(403);
-    }
+    if (req.query['hub.verify_token'] === process.env.VERIFY_TOKEN) res.status(200).send(req.query['hub.challenge']);
+    else res.sendStatus(403);
 });
 
 app.post('/webhook', async (req, res) => {
@@ -385,9 +383,7 @@ app.post('/webhook', async (req, res) => {
     if (body.object === 'whatsapp_business_account') {
         res.sendStatus(200);
 
-        const entry = body.entry?.[0];
-        const changes = entry?.changes?.[0];
-        const value = changes?.value;
+        const value = body.entry?.[0]?.changes?.[0]?.value;
         const message = value?.messages?.[0];
 
         if (message?.type === 'text' || message?.type === 'location') {
@@ -397,34 +393,30 @@ app.post('/webhook', async (req, res) => {
             if (processedMessages.size > 1000) processedMessages.clear();
 
             const msgTimestamp = parseInt(message.timestamp, 10);
-            const currentTimestamp = Math.floor(Date.now() / 1000);
-            if (currentTimestamp - msgTimestamp > 300) { 
-                console.log(`⏳ Ignored stale message from Meta retry.`);
+            if (Math.floor(Date.now() / 1000) - msgTimestamp > 300) {
+                console.log(`⏳ [Webhook] Ignored stale message from +${message.from} (Meta retry).`);
                 return;
             }
 
             const customerPhone = message.from;
             const phoneId = value.metadata.phone_number_id; 
-
-            const contactProfile = value.contacts?.[0]?.profile?.name;
-            const customerName = contactProfile ? contactProfile : "Customer";
-
-            let customerText = "";
-            if (message.type === 'text') customerText = message.text.body;
-            else if (message.type === 'location') customerText = "📍 [Sent a Location Pin for Address]";
+            const customerName = value.contacts?.[0]?.profile?.name || "Customer";
+            let customerText = message.type === 'text' ? message.text.body : "📍 [Sent a Location Pin for Address]";
+            
+            console.log(`📩 [Webhook] Received message from +${customerPhone}: "${customerText}"`);
 
             if (!isSubscriptionActive && customerPhone !== SUPER_ADMIN) {
                 let suspendMsg = ADMIN_NUMBERS.includes(customerPhone) 
                     ? "🚨 SYSTEM SUSPENDED 🚨\nYour AI Assistant subscription is overdue." 
-                    : "Our AI ordering system is currently offline for maintenance! 🛠️\nPlease call 08133728255.";
+                    : `Our AI system is offline for maintenance! 🛠️\nPlease call ${BUSINESS_PHONE}.`;
                 await sendWhatsApp(phoneId, customerPhone, suspendMsg);
                 return; 
             }
 
-            // --- NEW: NLP ADMIN COMMAND BLOCK ---
+            // --- NLP ADMIN COMMAND BLOCK ---
             if (ADMIN_NUMBERS.includes(customerPhone)) {
+                console.log(`🛠️ [Admin] Command received from +${customerPhone}`);
                 
-                // Allow Super Admin to bypass AI for shutdown/restart directly (saves latency)
                 if (customerPhone === SUPER_ADMIN && customerText.toLowerCase() === 'shutdown') {
                     isSubscriptionActive = false;
                     await sendWhatsApp(phoneId, customerPhone, "🔴 SAAS KILL SWITCH ACTIVATED.");
@@ -436,14 +428,18 @@ app.post('/webhook', async (req, res) => {
                 }
 
                 try {
-                    // Send CEO's text to the Admin AI for translation
                     const adminResult = await adminModel.generateContent(`Manager request: ${customerText}`);
-                    const tasks = JSON.parse(adminResult.response.text());
+                    let tasks = JSON.parse(adminResult.response.text());
+                    
+                    // 🛡️ THE SAFETY NET: Fix JSON parsing issues
+                    if (!Array.isArray(tasks)) {
+                        tasks = [tasks];
+                    }
+                    
+                    console.log(`🤖 [Admin AI] Parsed actions:`, JSON.stringify(tasks, null, 2));
                     let ceoReplySummary = [];
 
-                    // Loop through the translated actions
                     for (const task of tasks) {
-                        
                         let targetPhone = getPhoneByOrderCode(task.orderId || task.targetIdentifier);
                         if (!targetPhone && (task.orderId || task.targetIdentifier)?.startsWith('234')) {
                             targetPhone = task.orderId || task.targetIdentifier;
@@ -466,7 +462,9 @@ app.post('/webhook', async (req, res) => {
                                 if (!targetPhone) {
                                     ceoReplySummary.push(`❌ Error: Could not find chat for ${task.orderId}.`);
                                 } else {
-                                    const aiFollowUp = await askGemini(targetPhone, "Customer", `[SYSTEM MESSAGE]: The manager confirmed the delivery fee for Zone E is N${task.amount}. Tell the customer Delivery Confirmed, add it to their total, and ask if their order is complete to proceed to checkout!`);
+                                    // 🛑 THE FIX: We added a strict command telling the AI to STOP and wait for the "YES" before printing the ticket.
+                                    const prompt = `[SYSTEM MESSAGE]: The manager confirmed the delivery fee is N${task.amount}. Tell the customer Delivery Confirmed, tell them the new total, and ask: "Is your order complete? Reply YES to send it to the kitchen!" CRITICAL RULE: DO NOT output the [NEW_ORDER] ticket yet. You MUST stop and wait for them to actually reply YES.`;
+                                    const aiFollowUp = await askGemini(targetPhone, "Customer", prompt);
                                     await sendWhatsApp(phoneId, targetPhone, aiFollowUp.replace('[PRICE_REQUEST]', '').trim());
                                     ceoReplySummary.push(`✅ Delivery for ${task.orderId} set to N${task.amount}.`);
                                 }
@@ -532,7 +530,6 @@ app.post('/webhook', async (req, res) => {
                                 break;
 
                             case 'status':
-                                // 1. Figure out the Shop's State
                                 let shopStatusStr = "";
                                 if (manualShopState === 'auto') {
                                     const currentHour = new Date(new Date().toLocaleString("en-US", { timeZone: "Africa/Lagos" })).getHours();
@@ -544,12 +541,10 @@ app.post('/webhook', async (req, res) => {
                                     shopStatusStr = pauseMessage !== "" ? `⏸️ Mode: *PAUSED*` : `🛑 Mode: Manually *CLOSED*`;
                                 }
 
-                                // 2. Figure out the AI/Live Chat State
                                 let chatStatusStr = humanOverride.size === 0 
                                     ? "🤖 All customers are chatting with the AI." 
                                     : `👨‍💻 ACTIVE LIVE CHATS (${humanOverride.size}):\n${Array.from(humanOverride).map(p => getOrderCode(p)).join(', ')}`;
 
-                                // 3. Combine them into a beautiful dashboard
                                 ceoReplySummary.push(`📊 *SYSTEM DASHBOARD*\n\n${shopStatusStr}\n\n${chatStatusStr}`);
                                 break;
 
@@ -559,24 +554,21 @@ app.post('/webhook', async (req, res) => {
                         }
                     }
                     
-                    // Send final batch summary to Admin
                     if (ceoReplySummary.length > 0) {
                         await sendWhatsApp(phoneId, customerPhone, ceoReplySummary.join('\n\n'));
                     }
 
                 } catch (error) {
-                    console.error("Admin AI parsing failed:", error.message);
-                    await sendWhatsApp(phoneId, customerPhone, "❌ I had trouble understanding that command. Could you rephrase it?");
+                    console.error("❌ [Admin AI Error] Failed to parse command. Rate limit likely hit.");
+                    await sendWhatsApp(phoneId, customerPhone, "❌ I had trouble understanding that command (or the system is busy). Could you rephrase it?");
                 }
                 
-                return; // STOP HERE! Admin never drops into the customer flow below.
+                return; 
             }
             
             // --- CUSTOMER FLOW ---
             if (!isShopOpen()) {
-                let excuseToGive = "We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n WE close 9PM.\nThanks!";
-                if (pauseMessage !== "") excuseToGive = pauseMessage;
-
+                let excuseToGive = pauseMessage || `We are currently closed! 🌙\n\nOur kitchen opens at 4:00 PM and the Shop opens at 6:00 PM.\n WE close 9PM.\nThanks!`;
                 await sendWhatsApp(phoneId, customerPhone, excuseToGive);
                 return; 
             }
@@ -643,6 +635,7 @@ app.post('/webhook', async (req, res) => {
             const mediaId = message.image.id;
             const phoneId = value.metadata.phone_number_id;
 
+            console.log(`📸 [Webhook] Image receipt received from +${customerPhone}`);
             await sendWhatsApp(phoneId, customerPhone, "Receipt received! 🧾 I am sending this to our human manager to verify right now. I will message you back the second your order is confirmed! ⏳");
 
             const uniqueCode = getOrderCode(customerPhone); 
@@ -658,10 +651,11 @@ app.post('/webhook', async (req, res) => {
                     });
                     await sendWhatsApp(phoneId, adminPhone, `🚨 RECEIPT ALERT 🚨\n🕒 ${timeString}\nOrder ID: ${uniqueCode}\n\nJust tell me: "Confirm ${uniqueCode}"`);
                 } catch (err) {
-                    console.error(`Failed to send receipt to ${adminPhone}`);
+                    console.error(`❌ [WhatsApp Error] Failed to send receipt to +${adminPhone}:`, err.response ? JSON.stringify(err.response.data) : err.message);
                 }
             }
         } else if (message?.type === 'audio') {
+            console.log(`🎧 [Webhook] Voice note received from +${message.from}`);
             await sendWhatsApp(value.metadata.phone_number_id, message.from, "Hey! 🎧 I'm still learning how to listen to voice notes. Could you please type your order or question out for me? ✍️");
         }
     } 
@@ -669,5 +663,5 @@ app.post('/webhook', async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-    console.log(`Bot server is running on port ${PORT}`);
+    console.log(`🚀 [Server] ${BUSINESS_NAME} Bot server is running on port ${PORT}`);
 });
